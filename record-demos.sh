@@ -20,7 +20,12 @@ cd "$(dirname "$0")"
 PROJECT="OnsideTV.xcodeproj"
 SCHEME="OnsideTV"
 TEST_CLASS="OnsideTVUITests/OnsideTVDemoTests"
-DERIVED="build/DemoDerivedData"
+# Build products go OUTSIDE the project folder. A project on the Desktop or in
+# Documents is usually synced by iCloud, which tags new files with extended
+# attributes — and codesign refuses to sign an app containing them
+# ("Command CodeSign failed ... resource fork, Finder information, or similar
+# detritus not allowed").
+DERIVED="$HOME/Library/Developer/Xcode/DerivedData/OnsideTV-Demo"
 RAW_DIR="build/demo"
 GIF_DIR="docs/demo"
 GIF_WIDTH="${GIF_WIDTH:-320}"
@@ -99,6 +104,10 @@ cleanup() {
 trap cleanup EXIT
 
 # ── Build once ─────────────────────────────────────────────────────────────
+# Strip iCloud/Finder attributes from the sources for the same codesign reason,
+# and drop the old in-project build folder from earlier versions of this script.
+xattr -cr OnsideTV OnsideTVWidget OnsideTVUITests 2>/dev/null || true
+rm -rf build/DemoDerivedData
 say "Building the app and UI tests (first run takes a few minutes)"
 xcodebuild build-for-testing \
   -project "$PROJECT" -scheme "$SCHEME" \
