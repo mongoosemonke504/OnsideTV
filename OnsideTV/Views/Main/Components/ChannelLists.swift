@@ -250,6 +250,7 @@ struct HomeCategoryShelf: View {
                             )
                         }
                         .buttonStyle(.plain)
+                        .accessibilityIdentifier("channelCard_\(c.name)")
                         .contextMenu {
                             Button { playAction(c) } label: { Label("Play", systemImage: "play.fill") }
                             Button { viewModel.toggleFavorite(c.id) } label: { Label(viewModel.favoriteIDs.contains(c.id) ? "Unfavorite" : "Favorite", systemImage: viewModel.favoriteIDs.contains(c.id) ? "star.slash" : "star") }
@@ -771,6 +772,7 @@ struct ChannelPreviewSheet: View {
                 .background(Capsule().fill(.white))
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("previewPlayButton")
             .padding(.horizontal, 20)
             .padding(.bottom, 12)
         }

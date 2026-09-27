@@ -108,6 +108,9 @@ struct OnsideTVApp: App {
     let liveActivityTimer = Timer.publish(every: 20, on: .main, in: .common).autoconnect()
 
     init() {
+        // README recordings: `-demoMode` seeds a legal demo playlist and guide.
+        // Runs first, before anything reads the saved accounts. Debug only.
+        DemoMode.prepareIfNeeded()
         AppDefaults.register()
         // NOTE: `UIScrollView.appearance().delaysContentTouches = false` used to
         // be set here, to restore the instant press feedback the old UIKit shelf

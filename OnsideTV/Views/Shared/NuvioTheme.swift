@@ -435,6 +435,8 @@ struct NuvioBottomBar: View {
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(.white)
                     .opacity(searchMode ? 0 : 1)
+                    // UI tests (README demo recordings) tap this to open search.
+                    .accessibilityIdentifier("tab_search")
 
                 HStack(spacing: 9) {
                     Image(systemName: "magnifyingglass")
@@ -583,6 +585,8 @@ struct NuvioBottomBar: View {
                     .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                // tab_home, tab_sports, tab_favorites, tab_settings — for UI tests.
+                .accessibilityIdentifier("tab_\(tab.rawValue.lowercased())")
             }
         }
         // ── The selection lens: ONE view for the whole row, behind the tabs.

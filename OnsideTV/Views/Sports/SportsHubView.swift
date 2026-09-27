@@ -1058,6 +1058,7 @@ private struct GameScoreButton: View {
             ScoreRow(game: game, sport: sport, isScoreHidden: isScoreHidden, isReminderSet: isReminderSet)
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("gameCard")
         .contextMenu(menuItems: {
             Button {
                 viewModel.runSmartSearch(gameID: game.id, home: h, away: a, sport: sport, network: game.streamNetworkHint, event: game)

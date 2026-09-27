@@ -559,6 +559,7 @@ struct PlayerControlsView: View {
                 .modifier(GlassEffect(cornerRadius: 22, isSelected: true, accentColor: nil))
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("playerCloseButton")
     }
 
     @ViewBuilder
