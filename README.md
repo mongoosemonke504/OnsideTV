@@ -6,6 +6,17 @@ Check the scores, tap a game, and it finds the channel that's showing it on your
 
 Heads up: Onside TV doesn't come with any channels. You need your own subscription from an IPTV provider.
 
+## Screenshots
+
+| Home | Sports | Watching |
+| :---: | :---: | :---: |
+| <img src="docs/screenshots/home.gif" width="240" alt="Home screen"> | <img src="docs/screenshots/sports.gif" width="240" alt="Game card with stats and lineups"> | <img src="docs/screenshots/watching.gif" width="240" alt="TV guide and watching a channel"> |
+
+| Search | Multi-View |
+| :---: | :---: |
+| <img src="docs/screenshots/search.gif" width="240" alt="Search"> | <img src="docs/screenshots/multiview.jpg" width="240" alt="Multi-View with four streams"> |
+
+
 ## Installation
 
 1. Download the latest IPA from the [Releases page](https://github.com/mongoosemonke504/OnsideTV/releases)
@@ -44,17 +55,6 @@ When you tap a game, the app looks through your channels for it. It matches both
 
 ### Look and feel
 Made for iOS 26 with Liquid Glass all through the app.
-
-## Screenshots
-Recorded on my iPhone.
-
-| Home | Sports | Watching |
-| :---: | :---: | :---: |
-| <img src="docs/screenshots/home.gif" width="240" alt="Home screen"> | <img src="docs/screenshots/sports.gif" width="240" alt="Game card with stats and lineups"> | <img src="docs/screenshots/watching.gif" width="240" alt="TV guide and watching a channel"> |
-
-| Search | Multi-View |
-| :---: | :---: |
-| <img src="docs/screenshots/search.gif" width="240" alt="Search"> | <img src="docs/screenshots/multiview.jpg" width="240" alt="Multi-View with four streams"> |
 
 ## Requirements
 - An iPhone on iOS 26 or newer
