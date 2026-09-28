@@ -6,15 +6,6 @@ Check the scores, tap a game, and it finds the channel that's showing it on your
 
 Heads up: Onside TV doesn't come with any channels. You need your own subscription from an IPTV provider.
 
-<p align="center">
-  <img src="docs/demo/home.gif" width="200" alt="Home screen">
-  <img src="docs/demo/watch.gif" width="200" alt="Watching a channel">
-  <img src="docs/demo/search.gif" width="200" alt="Search">
-  <img src="docs/demo/sports.gif" width="200" alt="Sports scores">
-</p>
-
-<p align="center"><sub>Demo channels are open-licence test streams (Blender open movies), not a real provider.</sub></p>
-
 ## Installation
 
 1. Download the latest IPA from the [Releases page](https://github.com/mongoosemonke504/OnsideTV/releases)
@@ -71,16 +62,6 @@ Recorded on my iPhone.
 
 ## Privacy
 No accounts, no ads, no analytics and no tracking. Your login stays on your phone and only gets sent to your provider.
-
-## Recording the demos
-The GIFs above come from scripted UI tests, so they can be re-recorded after any UI change:
-
-```sh
-brew install ffmpeg      # once
-./record-demos.sh        # or: ./record-demos.sh home watch
-```
-
-The tests launch the app with `-demoMode` (debug builds only), which loads a generated playlist of open-licence test streams with a made-up guide. The walkthroughs live in `OnsideTVUITests/OnsideTVDemoTests.swift`.
 
 ## ❤️ Support the project
 
