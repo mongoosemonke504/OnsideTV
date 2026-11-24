@@ -494,17 +494,7 @@ struct MultiViewScreen: View {
             ?? game.awayCompetitor?.athlete?.shortName ?? ""
 
         // Fast path: pre-resolution cache or direct synchronous match.
-        let hiddenCatIDs = Set(viewModel.categories.filter { $0.isHidden }.map { $0.id })
-        if let match = ChannelViewModel.resolveBestMatch(
-            home: h, away: a, network: game.streamNetworkHint,
-            channels: viewModel.channels,
-            hiddenIDs: viewModel.hiddenIDs,
-            hiddenCatIDs: hiddenCatIDs,
-            epg: viewModel.epgData,
-            now: Date(),
-            preferredLanguage: viewModel.preferredLanguage,
-            preferredQuality: viewModel.preferredQuality
-        ) {
+        if let match = viewModel.provenChannel(for: game) {
             withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
                 viewModel.addToMultiView(match)
                 if let idx = viewModel.multiViewSlots.firstIndex(where: { $0?.id == match.id }) {
