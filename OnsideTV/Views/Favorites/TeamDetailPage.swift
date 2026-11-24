@@ -34,6 +34,8 @@ struct TeamDetailPage: View {
     @State private var standings: [LeagueDetailService.StandingsGroup] = []
     @State private var squad: [TeamDetailService.Player] = []
     @State private var squadPhotos: [String: String] = [:]
+    /// The squad player whose season sheet is open.
+    @State private var selectedPlayer: TeamDetailService.Player?
     @State private var seasonStats: TeamDetailService.SeasonStats?
     @State private var clubInfo: TeamDetailService.ClubInfo?
     @State private var aboutExpanded = false
@@ -798,6 +800,21 @@ struct TeamDetailPage: View {
 
     @ViewBuilder
     private var squadTab: some View {
+        squadList
+            .sheet(item: $selectedPlayer) { player in
+                if let sport {
+                    PlayerSeasonSheet(
+                        player: player,
+                        photo: (player.headshot?.isEmpty == false) ? player.headshot! : (squadPhotos[player.name] ?? ""),
+                        teamName: profile?.displayName ?? team.displayName ?? "",
+                        sport: sport,
+                        leagueLabel: leagueLabel
+                    )
+                }
+            }
+    }
+
+    private var squadList: some View {
         LazyVStack(alignment: .leading, spacing: 26) {
             ForEach(squadSections, id: \.title) { squadSection in
                 VStack(alignment: .leading, spacing: 14) {
@@ -815,7 +832,14 @@ struct TeamDetailPage: View {
                     }
                     VStack(spacing: 0) {
                         ForEach(Array(squadSection.players.enumerated()), id: \.element.id) { index, player in
-                            squadRow(player)
+                            Button {
+                                guard SwipeTapGuard.tapsAllowed, sport != nil else { return }
+                                viewModel.triggerSelectionHaptic()
+                                selectedPlayer = player
+                            } label: {
+                                squadRow(player).contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
                             if index < squadSection.players.count - 1 {
                                 Rectangle()
                                     .fill(Color.white.opacity(0.06))
