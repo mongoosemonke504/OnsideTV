@@ -136,7 +136,19 @@ public class PlayerEngine: NSObject, ObservableObject {
     /// simply report none — so the stall watchdog only trusts a clock that
     /// was advancing and then stopped.
     private var clockEverAdvanced = false
-    
+
+    /// When VLC last actually put something out: a new picture shown, audio
+    /// decoded, or bytes read off the network. This, not the stream's clock
+    /// or VLC's "buffering" state, is what says a stream is alive. Plenty of
+    /// IPTV streams report a clock that stops while the picture carries on,
+    /// and VLC raises "buffering" mid-playback and often never clears it; both
+    /// used to trip the watchdog and reload a healthy stream every ~30s.
+    private var lastMediaProgressTime = Date()
+    private var lastMediaStats: (pictures: Int32, audio: Int32, bytes: Int32) = (0, 0, 0)
+    /// How long nothing at all may come out of VLC before the stream counts
+    /// as dead and is reloaded.
+    private static let deadStreamAfter: TimeInterval = 20
+
     public enum VideoQuality: String, CaseIterable, Identifiable {
         case auto = "Auto", high = "1080p", medium = "720p", low = "480p"
         public var id: String { rawValue }
@@ -351,6 +363,8 @@ public class PlayerEngine: NSObject, ObservableObject {
         self.lastProgressValue = -1
         self.lastProgressCheckTime = Date()
         self.clockEverAdvanced = false
+        self.lastMediaProgressTime = Date()
+        self.lastMediaStats = (0, 0, 0)
 
         // VLC plays everything — live streams and local recordings (.ts and the
         // remuxed .mp4 alike). For local files, probe the duration via AVURLAsset
@@ -472,10 +486,12 @@ public class PlayerEngine: NSObject, ObservableObject {
         bufferStartTime = Date()
         bufferWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self, self.isBuffering, let start = self.bufferStartTime else { return }
-            let duration = Date().timeIntervalSince(start)
-            
-            
-            if duration > 25.0 {
+            let now = Date()
+            // Stuck only when the buffering has gone on AND nothing has come
+            // out of VLC for that long. A stream VLC calls "buffering" while
+            // it keeps showing pictures is just playing.
+            if now.timeIntervalSince(start) > 25.0,
+               now.timeIntervalSince(self.lastMediaProgressTime) > Self.deadStreamAfter {
                 self.handleStuckBuffer()
             }
         }
@@ -587,6 +603,9 @@ public class PlayerEngine: NSObject, ObservableObject {
             
             media.addOptions([
                 "network-caching": bufferMs,
+                // IPTV servers drop idle HTTP connections; VLC picks the
+                // stream back up itself instead of the app reloading it.
+                "http-reconnect": 1,
                 "clock-jitter": 500,
                 "clock-synchro": 0,
                 "drop-late-frames": 1,
@@ -660,21 +679,32 @@ public class PlayerEngine: NSObject, ObservableObject {
 
         let vlcSeconds: Double? = vlcMediaPlayer.time.value.map { Double(truncating: $0) / 1000.0 }
 
-        // Stall watchdog, on VLC's RAW clock — `currentTime` is not fed from
-        // it for live streams any more, and during a recording it is the
-        // wall clock, which never stalls.
-        if let sec = vlcSeconds, isPlaying && !userPaused && !isBuffering {
-            if abs(sec - lastProgressValue) < 0.1 {
-                if clockEverAdvanced, let lastCheck = lastProgressCheckTime, now.timeIntervalSince(lastCheck) > 30.0 {
-                    print("🚨 [NebuloEngine] Playback stalled (time not advancing). Triggering Watchdog.")
-                    handleStuckBuffer()
-                    lastProgressCheckTime = now
+        // Stall watchdog, on what VLC actually puts out. Any new picture,
+        // decoded audio or bytes off the network means the stream is alive.
+        if let stats = vlcMediaPlayer.media?.statistics {
+            let snapshot = (pictures: stats.displayedPictures, audio: stats.decodedAudio, bytes: stats.readBytes)
+            if snapshot.pictures != lastMediaStats.pictures
+                || snapshot.audio != lastMediaStats.audio
+                || snapshot.bytes != lastMediaStats.bytes {
+                lastMediaProgressTime = now
+                lastMediaStats = snapshot
+                // Pictures on screen: whatever VLC says, this isn't buffering,
+                // so drop the spinner and stand the buffer watchdog down.
+                if isBuffering, vlcMediaPlayer.isPlaying, snapshot.pictures > 0 {
+                    isBuffering = false
                 }
-            } else {
-                if lastProgressValue >= 0 { clockEverAdvanced = true }
-                lastProgressValue = sec
-                lastProgressCheckTime = now
             }
+        }
+        if isPlaying && !userPaused,
+           now.timeIntervalSince(lastMediaProgressTime) > Self.deadStreamAfter {
+            print("🚨 [NebuloEngine] Nothing out of VLC for \(Int(Self.deadStreamAfter))s. Reloading.")
+            lastMediaProgressTime = now
+            handleStuckBuffer()
+        }
+        if let sec = vlcSeconds, abs(sec - lastProgressValue) >= 0.1 {
+            if lastProgressValue >= 0 { clockEverAdvanced = true }
+            lastProgressValue = sec
+            lastProgressCheckTime = now
         }
 
         if externalTimeManagement {
