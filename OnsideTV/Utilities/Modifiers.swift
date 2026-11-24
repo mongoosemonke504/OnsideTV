@@ -430,9 +430,12 @@ struct HeaderFadeBackdrop: View {
     /// How far ABOVE the header the wash reaches — the chrome row plus the
     /// status bar. Overshooting is harmless: the excess is off-screen.
     var extendUp: CGFloat = 112
-    /// How far BELOW the header the wash keeps fading, so it resolves into the
-    /// page instead of stopping at an edge.
-    var extendDown: CGFloat = 104
+    /// How far BELOW the header the wash reaches. Zero: the ramp is already
+    /// clear at the header's bottom edge. It used to run on for 104pt at more
+    /// than half strength there, and whatever sat just under the header at
+    /// rest (a hub's first game card, the "Live Now" title in Search) was
+    /// drawn dimmed when it should be pure white.
+    var extendDown: CGFloat = 0
     /// Opacity at the very top of the display, behind the status bar.
     var strength: Double = 1.0
     var tint: Color = .black
@@ -455,8 +458,8 @@ struct HeaderFadeBackdrop: View {
                 .init(color: tint.opacity(strength),        location: 0.0),
                 .init(color: tint.opacity(strength * 0.99), location: atHeaderBottom * 0.34),
                 .init(color: tint.opacity(strength * 0.92), location: atHeaderBottom * 0.60),
-                .init(color: tint.opacity(strength * 0.76), location: atHeaderBottom * 0.84),
-                .init(color: tint.opacity(strength * 0.56), location: atHeaderBottom),
+                .init(color: tint.opacity(strength * 0.70), location: atHeaderBottom * 0.84),
+                .init(color: tint.opacity(0),               location: atHeaderBottom),
                 .init(color: tint.opacity(0),               location: 1.0)
             ],
             startPoint: .top, endPoint: .bottom

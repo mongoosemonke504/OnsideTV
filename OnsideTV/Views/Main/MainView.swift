@@ -901,6 +901,15 @@ struct MainViewModifiers: ViewModifier {
                 }
             }
             .alert("No Streams Found", isPresented: showNoStreamsAlert) { Button("OK", role: .cancel) { } } message: { Text("No streams were found. Please search for the channel manually.") }
+            .alert("Game Not Found", isPresented: Binding(
+                get: { viewModel.showGameNotFoundAlert },
+                set: { viewModel.showGameNotFoundAlert = $0 }
+            )) {
+                Button("See Possible Streams") { viewModel.showSelectionSheet = true }
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text("Couldn't find a channel showing this game in your TV guide.")
+            }
             .alert("Rename", isPresented: showRenameAlert) {
                 TextField("New Name", text: $renameDraft)
                 Button("Save") {
@@ -1082,6 +1091,56 @@ struct StandardLayout: SwiftUI.View {
     @State private var isDetailInteractive: Bool = true
     /// Home is the visible screen: no section open and not showing results.
     private var homeVisible: Bool { !showsLegacyResults && selectedCategory == nil }
+    /// The home stack is on screen for home itself AND for any drill-down
+    /// pushed onto it; only the dock tabs and search cover it.
+    private var homeLayerVisible: Bool {
+        !showsLegacyResults && (selectedCategory.map { Self.isDrillDown($0) } ?? true)
+    }
+
+    /// The home stack's path, derived from `selectedCategory` so every
+    /// existing way of opening a page (shelf headers, Quick Access, search,
+    /// the dock's Home button) drives the native push and pop unchanged.
+    /// A swipe back writes an empty path, which clears the selection.
+    private var drillDownPath: Binding<[StreamCategory]> {
+        Binding(
+            get: {
+                if let cat = selectedCategory, Self.isDrillDown(cat) { return [cat] }
+                return []
+            },
+            set: { path in
+                if let top = path.last {
+                    if selectedCategory != top { selectedCategory = top }
+                } else if let cat = selectedCategory, Self.isDrillDown(cat) {
+                    selectedCategory = nil
+                }
+            }
+        )
+    }
+
+    /// A drill-down page as pushed onto the home stack: the page, its Back
+    /// chevron and title row, and an opaque background so home doesn't show
+    /// through it while it slides.
+    @ViewBuilder
+    private func drillDownPage(_ cat: StreamCategory) -> some SwiftUI.View {
+        Group {
+            if cat.id == -5 {
+                RecordingsView(viewModel: viewModel, playAction: playAction, onBack: handleBackNavigation)
+            } else {
+                CategoryDetailView(title: cat.name, channels: getChannelsToShow(for: cat), accentColor: accentColor, playAction: playAction, toggleFav: viewModel.toggleFavorite, promptRename: viewModel.triggerRenameChannel, hideChannel: viewModel.hideChannel, favoriteIDs: viewModel.favoriteIDs, viewModel: viewModel, showMultiView: $showMultiView, onBack: handleBackNavigation, onCategorySelect: { next in selectedCategory = next; searchText = "" }, zoomNS: zoomNS)
+            }
+        }
+        .onPreferenceChange(SectionScrollOffsetsKey.self) { offsets in
+            guard cat.id == -5, let y = offsets["rec"] else { return }
+            sectionTitleProgress.set(min(max(-y / 40, 0), 1))
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            sectionChromeRow(for: cat, titleProgress: sectionTitleProgress)
+        }
+        // Room for the dock, which stays up over pushed pages.
+        .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: 90) }
+        .background { AppBackground().ignoresSafeArea() }
+        .toolbar(.hidden, for: .navigationBar)
+    }
 
     // groupedCategories is cheap (O(categories) ≈ few hundred) but still
     // cached so the ForEach never re-evaluates on every viewModel publish.
@@ -1650,7 +1709,7 @@ struct StandardLayout: SwiftUI.View {
                         onDragChange: { backSwipe.isActive = $0 }
                     ))
                     .zIndex(2)
-            } else if let cat = selectedCategory, !Self.mountedHubIDs.contains(cat.id) {
+            } else if let cat = selectedCategory, !Self.mountedHubIDs.contains(cat.id), !Self.isDrillDown(cat) {
                 // `.allowsHitTesting(isDetailInteractive)` is the key fix for
                 // Quick Access buttons becoming unresponsive after navigation.
                 // During the blurFade removal animation the departing view stays
@@ -1746,6 +1805,13 @@ struct StandardLayout: SwiftUI.View {
             // sits at zIndex 0 below the section overlays, with opacity and
             // hit-testing gated while a section is open.
             if !viewModel.isLoading {
+                // Home is the root of its own navigation stack, and every
+                // drill-down (a category, Recently Watched, Recordings) is a
+                // real push onto it: the system slide, the page underneath
+                // easing aside, and the edge swipe that follows the finger,
+                // exactly like Manage Sports Categories in Settings. They used
+                // to be drawn on top of home with a hand-made slide and swipe.
+                NavigationStack(path: drillDownPath) {
                 ScrollView(showsIndicators: false) {
                     // NOTE: the GlassEffectContainer used to wrap this ENTIRE
                     // stack. Nuvio's home list has no glass in it at all, and a
@@ -1833,7 +1899,7 @@ struct StandardLayout: SwiftUI.View {
                                         showsChevron: true
                                     ) {
                                         viewModel.lastSelectedHomeID = -3
-                                        withAnimation(Self.pageAnimation) { selectedCategory = StreamCategory(id: -3, name: "Sports") }
+                                        selectedCategory = StreamCategory(id: -3, name: "Sports")
                                     }
 
                                     LiveGamesPreviewList(
@@ -1855,7 +1921,7 @@ struct StandardLayout: SwiftUI.View {
                                         showsChevron: true
                                     ) {
                                         viewModel.lastSelectedHomeID = -4
-                                        withAnimation(Self.pageAnimation) { selectedCategory = StreamCategory(id: -4, name: "Favorites") }
+                                        selectedCategory = StreamCategory(id: -4, name: "Favorites")
                                     }
 
                                     FavoriteTeamsShelf(
@@ -2092,9 +2158,14 @@ struct StandardLayout: SwiftUI.View {
                         .ignoresSafeArea(.container, edges: .top)
                         .allowsHitTesting(false)
                     }
-                    .modifier(DetailUnderlayParallax(cover: backSwipe.cover))
-                    .opacity(homeVisible || backSwipeActive ? 1 : 0)
-                    .allowsHitTesting(homeVisible)
+                    .toolbar(.hidden, for: .navigationBar)
+                    .background(NavigationPopGestureUnlock())
+                    .navigationDestination(for: StreamCategory.self) { cat in
+                        drillDownPage(cat)
+                    }
+                }
+                    .opacity(homeLayerVisible ? 1 : 0)
+                    .allowsHitTesting(homeLayerVisible)
                     .zIndex(0)
             }
         }
@@ -2150,20 +2221,11 @@ struct StandardLayout: SwiftUI.View {
             // Tab switches carry no animation in this app — they swap in a
             // single frame — and that slide was the whole of what looked
             // wrong about them.
-            if let cat, Self.isDrillDown(cat) {
-                isDetailInteractive = true
-                // Start from covering, whatever a previous swipe left behind,
-                // and push the home screen aside as the page arrives.
-                backSwipe.slide.set(0)
-                withAnimation(Self.pageAnimation) { backSwipe.cover.set(1) }
-            } else {
-                // A hub tab, or home. `set` assigns only on a real change, so
-                // this is a no-op while a chevron close is already animating
-                // the cover down — that animation survives — and instant when
-                // arriving from a tab that never pushed anything aside.
-                backSwipe.slide.set(0)
-                backSwipe.cover.set(0)
-            }
+            // Drill-downs are native pushes on the home stack now, and the
+            // dock stays up over them, the way it does over Settings' pages,
+            // so nothing is pushed aside or covered here any more.
+            backSwipe.slide.set(0)
+            backSwipe.cover.set(0)
             sectionTitleProgress.set(0)
             // First visit to a hub mounts it; it stays for the rest of the
             // session. Nothing is built for a tab that is never opened.
@@ -2454,62 +2516,9 @@ struct StandardLayout: SwiftUI.View {
     }
 
     private func handleBackNavigation() {
-        isDetailInteractive = false
-        // Eased down here rather than from the observer, so the home screen
-        // travels with the page on its way out — the same pairing the detail
-        // pages get from `DetailRouter.close()`.
-        withAnimation(Self.pageAnimation) { backSwipe.cover.set(0) }
-        // Defer the state flip to the next run-loop turn so SwiftUI can
-        // commit `isDetailInteractive = false` as its own update pass —
-        // batching both changes together would apply `allowsHitTesting(false)`
-        // only to the CURRENT render's view, not the one kept alive for the
-        // removal transition.
-        DispatchQueue.main.async {
-            withAnimation(Self.pageAnimation) { selectedCategory = nil }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                isDetailInteractive = true
-            }
-        }
-    }
-}
-
-struct DashboardCard: View {
-    let title: String
-    let icon: String
-    let color: Color
-    let accentColor: Color
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            ZStack(alignment: .bottomLeading) {
-                Circle()
-                    .fill(color.opacity(0.55))
-                    .frame(width: 130, height: 130)
-                    .blur(radius: 38)
-                    .offset(x: 35, y: -30)
-
-                Image(systemName: icon)
-                    .font(.system(size: 42, weight: .bold))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(color)
-                    .shadow(color: color.opacity(0.6), radius: 8, x: 0, y: 2)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                    .padding(.top, 14)
-                    .padding(.trailing, 16)
-
-                Text(title)
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .padding(14)
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: 120)
-            .modifier(TintedGlassCard(cornerRadius: 20, tint: color))
-        }
-        .buttonStyle(PressableCardStyle())
+        // Drill-downs live on the home navigation stack: clearing the
+        // selection empties its path, and the stack runs the native pop.
+        selectedCategory = nil
     }
 }
 
