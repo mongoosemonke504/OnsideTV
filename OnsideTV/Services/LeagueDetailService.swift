@@ -40,8 +40,8 @@ nonisolated enum LeagueDetailService {
         let back: TimeInterval = wideWindow ? 14 : 6
         let forward: TimeInterval = wideWindow ? 49 : 12
 
-        func events(from: String, to: String) async -> [ESPNEvent] {
-            guard let url = URL(string: "https://site.api.espn.com/apis/site/v2/sports/\(path)/scoreboard?dates=\(from)-\(to)&limit=500")
+        func events(dates: String) async -> [ESPNEvent] {
+            guard let url = URL(string: "https://site.api.espn.com/apis/site/v2/sports/\(path)/scoreboard?dates=\(dates)&limit=500")
             else { return [] }
             guard let (data, _) = try? await URLSession.shared.data(from: url),
                   let res = try? JSONDecoder().decode(ESPNResponse.self, from: data)
@@ -49,13 +49,42 @@ nonisolated enum LeagueDetailService {
             return res.events ?? []
         }
 
-        let from = fmt.string(from: Date().addingTimeInterval(-back * 86400))
-        let to   = fmt.string(from: Date().addingTimeInterval(forward * 86400))
-        var found = await events(from: from, to: to)
+        // ESPN no longer accepts a "start-end" date range here: every one
+        // comes back `400 Failed to get events endpoint`, so the page fell
+        // through to today's games alone and most leagues showed no fixtures
+        // or results. A whole month ("202611") still works, so the window is
+        // fetched month by month, in parallel, and trimmed back to size.
+        let start = Date().addingTimeInterval(-back * 86400)
+        let end = Date().addingTimeInterval(forward * 86400)
+        let monthFmt = DateFormatter()
+        monthFmt.locale = Locale(identifier: "en_US_POSIX")
+        monthFmt.timeZone = TimeZone(identifier: "UTC")
+        monthFmt.dateFormat = "yyyyMM"
+        var months: [String] = []
+        var cursor = start
+        while cursor <= end {
+            let month = monthFmt.string(from: cursor)
+            if !months.contains(month) { months.append(month) }
+            cursor = cursor.addingTimeInterval(86400)
+        }
+        let monthsToFetch = months
+        var found: [ESPNEvent] = await withTaskGroup(of: [ESPNEvent].self) { group in
+            for month in monthsToFetch { group.addTask { await events(dates: month) } }
+            var merged: [ESPNEvent] = []
+            var seen = Set<String>()
+            for await batch in group {
+                for event in batch where seen.insert(event.id).inserted { merged.append(event) }
+            }
+            return merged
+        }
+        // A day's margin either side, so a game near midnight UTC isn't lost
+        // to the time zone.
+        found = found.filter {
+            $0.gameDate >= start.addingTimeInterval(-86400) && $0.gameDate <= end.addingTimeInterval(86400)
+        }
 
         if found.isEmpty {
-            let today = fmt.string(from: Date())
-            found = await events(from: today, to: today)
+            found = await events(dates: fmt.string(from: Date()))
         }
         return found.sorted { $0.gameDate < $1.gameDate }
     }

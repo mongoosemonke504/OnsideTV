@@ -109,6 +109,16 @@ nonisolated enum TeamDetailService {
         let current = await schedulePage(path: path, teamID: teamID, season: nil)
         var events = current.events
 
+        // Football's schedule is results only. Its upcoming matches come from
+        // the same endpoint with `fixture=true`, which nothing asked for, so a
+        // favourite club's page never showed a match it hadn't played yet.
+        // Any schedule with nothing still to come gets the fixtures merged in.
+        if !events.contains(where: { $0.status.type.state != "post" }) {
+            let fixtures = await schedulePage(path: path, teamID: teamID, season: nil, fixtures: true)
+            var seen = Set(events.map(\.id))
+            for event in fixtures.events where seen.insert(event.id).inserted { events.append(event) }
+        }
+
         if !events.contains(where: { $0.status.type.state == "post" }), let year = current.seasonYear {
             let previous = await schedulePage(path: path, teamID: teamID, season: year - 1)
             var seen = Set(events.map(\.id))
@@ -120,10 +130,14 @@ nonisolated enum TeamDetailService {
     private static func schedulePage(
         path: String,
         teamID: String,
-        season: Int?
+        season: Int?,
+        fixtures: Bool = false
     ) async -> (events: [ESPNEvent], seasonYear: Int?) {
         var string = "https://site.api.espn.com/apis/site/v2/sports/\(path)/teams/\(teamID)/schedule"
-        if let season { string += "?season=\(season)" }
+        var query: [String] = []
+        if let season { query.append("season=\(season)") }
+        if fixtures { query.append("fixture=true") }
+        if !query.isEmpty { string += "?" + query.joined(separator: "&") }
         guard let url = URL(string: string),
               let (data, _) = try? await URLSession.shared.data(from: url),
               let res = try? JSONDecoder().decode(ScheduleResponse.self, from: data)
@@ -283,7 +297,7 @@ nonisolated enum TeamDetailService {
 
     private static func clubInfo(name: String, sport: SportType?) async -> ClubInfo? {
         guard let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://www.thesportsdb.com/api/v1/json/3/searchteams.php?t=\(encoded)")
+              let url = URL(string: "https://www.thesportsdb.com/api/v1/json/123/searchteams.php?t=\(encoded)")
         else { return nil }
         guard let (data, response) = try? await URLSession.shared.data(from: url),
               (response as? HTTPURLResponse)?.statusCode == 200,
