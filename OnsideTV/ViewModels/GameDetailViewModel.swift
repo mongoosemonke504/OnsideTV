@@ -383,6 +383,14 @@ final class GameDetailViewModel: ObservableObject {
     @Published private(set) var topRatedPlayerID: String?
 
     private func recomputeTopRatedPlayer() {
+        // Player of the match is a verdict on the whole game, so nobody is
+        // crowned (no blue badge) until it's over. Mid-game the leader is
+        // just the highest green.
+        let state = summary?.header?.competitions?.first?.status?.type?.state ?? request.game.status.type.state
+        guard state == "post" else {
+            if topRatedPlayerID != nil { topRatedPlayerID = nil }
+            return
+        }
         var best: (id: String, rating: Double)?
         for homeAway in ["home", "away"] {
             if let lineup = lineup(homeAway: homeAway) {

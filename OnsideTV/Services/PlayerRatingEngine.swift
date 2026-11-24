@@ -13,6 +13,28 @@ nonisolated enum PlayerRatingEngine {
         (min(10.0, max(1.0, r)) * 10).rounded() / 10
     }
 
+    /// The last step of every match rating: stretches the top of the scale.
+    ///
+    /// The raw formulas were stingy with big games: a genuinely outstanding
+    /// performance came out around 7.5 when it reads as an 8.3. Up to 6.5,
+    /// an ordinary game, nothing changes. Above it the scale is stretched,
+    /// most in the 6.5–7.5 band where the big games were bunching up, and
+    /// less higher up so a 9+ still has to be earned and 10 stays rare:
+    /// raw 7.0 → 7.4, 7.5 → 8.3, 8.0 → 8.75, 9.0 → 9.65.
+    ///
+    /// Only per-match ratings come through here. A season average is the mean
+    /// of these and must not be stretched a second time.
+    static func finishRating(_ raw: Double) -> Double {
+        let r: Double
+        switch raw {
+        case ..<6.5: r = raw
+        case ..<7.5: r = 6.5 + (raw - 6.5) * 1.8
+        case ..<9.0: r = 8.3 + (raw - 7.5) * 0.9
+        default:     r = 9.65 + (raw - 9.0) * 0.35
+        }
+        return clampRating(r)
+    }
+
     // MARK: - Soccer (from summary `rosters` per-player stats)
 
     /// Rates a soccer lineup player from the roster stat list. Returns nil
@@ -86,7 +108,7 @@ nonisolated enum PlayerRatingEngine {
         if minutes > 0 && minutes < 30 {
             r = 6.0 + (r - 6.0) * (0.4 + 0.6 * minutes / 30)
         }
-        return clampRating(r)
+        return finishRating(r)
     }
 
     // MARK: - US sports (from summary `boxscore.players` stat groups)
@@ -119,7 +141,7 @@ nonisolated enum PlayerRatingEngine {
             + 0.7 * num(cols["OREB"]) + 0.3 * num(cols["DREB"])
             + num(cols["STL"]) + 0.7 * num(cols["AST"]) + 0.7 * num(cols["BLK"])
             - 0.4 * num(cols["PF"]) - num(cols["TO"])
-        return clampRating(5.2 + gameScore * 0.16)
+        return finishRating(5.2 + gameScore * 0.16)
     }
 
     private static func footballRating(groups: [(group: String, columns: [String: String])]) -> Double? {
@@ -156,7 +178,7 @@ nonisolated enum PlayerRatingEngine {
                 continue
             }
         }
-        return contributed ? clampRating(r) : nil
+        return contributed ? finishRating(r) : nil
     }
 
     private static func baseballRating(groups: [(group: String, columns: [String: String])]) -> Double? {
@@ -181,7 +203,7 @@ nonisolated enum PlayerRatingEngine {
                 continue
             }
         }
-        return contributed ? clampRating(r) : nil
+        return contributed ? finishRating(r) : nil
     }
 
     private static func hockeyRating(groups: [(group: String, columns: [String: String])]) -> Double? {
@@ -189,7 +211,7 @@ nonisolated enum PlayerRatingEngine {
             if group.lowercased().contains("goalie") || cols["SA"] != nil {
                 let sa = num(cols["SA"])
                 guard sa > 0 else { continue }
-                return clampRating(5.0 + num(cols["SV"]) * 0.045 - num(cols["GA"]) * 0.55)
+                return finishRating(5.0 + num(cols["SV"]) * 0.045 - num(cols["GA"]) * 0.55)
             }
             let toi = cols["TOI"] ?? cols["MIN"]
             guard toi != nil else { continue }
@@ -197,7 +219,7 @@ nonisolated enum PlayerRatingEngine {
             r += num(cols["G"]) * 1.1 + num(cols["A"]) * 0.75 + num(cols["SOG"]) * 0.08
             r += num(cols["HITS"]) * 0.04 + num(cols["BS"]) * 0.05 + num(cols["+/-"]) * 0.12
             r -= num(cols["PIM"]) * 0.08
-            return clampRating(r)
+            return finishRating(r)
         }
         return nil
     }
