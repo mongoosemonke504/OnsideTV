@@ -547,6 +547,7 @@
 		E1F2B44B2F0B9633004D9D5D /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIcon-GP1 AppIcon-GP2 AppIcon-GP3 AppIcon-GP4 AppIcon-GK1 AppIcon-GK2 AppIcon-GK3 AppIcon-GK4 AppIcon-GS1 AppIcon-GS2 AppIcon-GS3 AppIcon-GS4";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_MODULE_VERIFIER_KIND = none;
@@ -583,6 +584,7 @@
 		E1F2B44C2F0B9633004D9D5D /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIcon-GP1 AppIcon-GP2 AppIcon-GP3 AppIcon-GP4 AppIcon-GK1 AppIcon-GK2 AppIcon-GK3 AppIcon-GK4 AppIcon-GS1 AppIcon-GS2 AppIcon-GS3 AppIcon-GS4";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_MODULE_VERIFIER_KIND = none;

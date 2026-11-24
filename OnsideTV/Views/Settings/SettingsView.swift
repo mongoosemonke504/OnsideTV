@@ -402,6 +402,16 @@ struct ContentManagementCard: View {
                 }
                 .foregroundStyle(.primary)
 
+                NavigationLink(destination: AppIconSettingsView()) {
+                    SettingsRow(icon: "app.badge.fill",
+                                title: "App Icon",
+                                subtitle: AppIconSettingsView.options.first(where: {
+                                    $0.iconName == UIApplication.shared.alternateIconName
+                                })?.title,
+                                iconColor: .orange)
+                }
+                .foregroundStyle(.primary)
+
                 NavigationLink(destination: HeroChannelsSettingsView(viewModel: viewModel, accentColor: accentColor)) {
                     SettingsRow(icon: "rectangle.on.rectangle.angled",
                                 title: "Hero Channels",
