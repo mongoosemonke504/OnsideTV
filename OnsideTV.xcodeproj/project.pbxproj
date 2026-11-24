@@ -44,8 +44,8 @@
 
 /* Begin PBXFileReference section */
 		A1B2C3D40000000000000001 /* OnsideTVWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OnsideTVWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		E1F2B43F2F0B9631004D9D5D /* OnsideTV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; name = OnsideTV.app; path = Nebulo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B70000000000000000000001 /* OnsideTVUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OnsideTVUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		E1F2B43F2F0B9631004D9D5D /* OnsideTV.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; name = OnsideTV.app; path = Nebulo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -67,27 +67,27 @@
 			path = OnsideTVWidget;
 			sourceTree = "<group>";
 		};
-		E1F2B4412F0B9631004D9D5D /* OnsideTV */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = OnsideTV;
-			sourceTree = "<group>";
-		};
 		B70000000000000000000002 /* OnsideTVUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = OnsideTVUITests;
 			sourceTree = "<group>";
 		};
+		E1F2B4412F0B9631004D9D5D /* OnsideTV */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = OnsideTV;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		B70000000000000000000005 /* Frameworks */ = {
+		A1B2C3D40000000000000005 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A1B2C3D40000000000000005 /* Frameworks */ = {
+		B70000000000000000000005 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -128,6 +128,28 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		A1B2C3D40000000000000003 /* OnsideTVWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1B2C3D40000000000000007 /* Build configuration list for PBXNativeTarget "OnsideTVWidget" */;
+			buildPhases = (
+				A1B2C3D40000000000000004 /* Sources */,
+				A1B2C3D40000000000000005 /* Frameworks */,
+				A1B2C3D40000000000000006 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A1B2C3D40000000000000002 /* OnsideTVWidget */,
+			);
+			name = OnsideTVWidget;
+			packageProductDependencies = (
+			);
+			productName = OnsideTVWidget;
+			productReference = A1B2C3D40000000000000001 /* OnsideTVWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		B70000000000000000000003 /* OnsideTVUITests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = B70000000000000000000007 /* Build configuration list for PBXNativeTarget "OnsideTVUITests" */;
@@ -150,28 +172,6 @@
 			productName = OnsideTVUITests;
 			productReference = B70000000000000000000001 /* OnsideTVUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
-		};
-		A1B2C3D40000000000000003 /* OnsideTVWidget */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = A1B2C3D40000000000000007 /* Build configuration list for PBXNativeTarget "OnsideTVWidget" */;
-			buildPhases = (
-				A1B2C3D40000000000000004 /* Sources */,
-				A1B2C3D40000000000000005 /* Frameworks */,
-				A1B2C3D40000000000000006 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			fileSystemSynchronizedGroups = (
-				A1B2C3D40000000000000002 /* OnsideTVWidget */,
-			);
-			name = OnsideTVWidget;
-			packageProductDependencies = (
-			);
-			productName = OnsideTVWidget;
-			productReference = A1B2C3D40000000000000001 /* OnsideTVWidget.appex */;
-			productType = "com.apple.product-type.app-extension";
 		};
 		E1F2B43E2F0B9631004D9D5D /* OnsideTV */ = {
 			isa = PBXNativeTarget;
@@ -214,16 +214,16 @@
 						DevelopmentTeam = EL9V67G3NB;
 						ProvisioningStyle = Automatic;
 					};
-					E1F2B43E2F0B9631004D9D5D = {
-						CreatedOnToolsVersion = 26.0.1;
-						DevelopmentTeam = EL9V67G3NB;
-						ProvisioningStyle = Automatic;
-					};
 					B70000000000000000000003 = {
 						CreatedOnToolsVersion = 26.0.1;
 						DevelopmentTeam = EL9V67G3NB;
 						ProvisioningStyle = Automatic;
 						TestTargetID = E1F2B43E2F0B9631004D9D5D;
+					};
+					E1F2B43E2F0B9631004D9D5D = {
+						CreatedOnToolsVersion = 26.0.1;
+						DevelopmentTeam = EL9V67G3NB;
+						ProvisioningStyle = Automatic;
 					};
 				};
 			};
@@ -252,14 +252,14 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		B70000000000000000000006 /* Resources */ = {
+		A1B2C3D40000000000000006 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A1B2C3D40000000000000006 /* Resources */ = {
+		B70000000000000000000006 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -298,14 +298,14 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		B70000000000000000000004 /* Sources */ = {
+		A1B2C3D40000000000000004 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A1B2C3D40000000000000004 /* Sources */ = {
+		B70000000000000000000004 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -322,55 +322,19 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
-		B70000000000000000000011 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = E1F2B43E2F0B9631004D9D5D /* OnsideTV */;
-			targetProxy = B70000000000000000000010 /* PBXContainerItemProxy */;
-		};
 		A1B2C3D4000000000000000B /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = A1B2C3D40000000000000003 /* OnsideTVWidget */;
 			targetProxy = A1B2C3D4000000000000000A /* PBXContainerItemProxy */;
 		};
+		B70000000000000000000011 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E1F2B43E2F0B9631004D9D5D /* OnsideTV */;
+			targetProxy = B70000000000000000000010 /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		B70000000000000000000008 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = EL9V67G3NB;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = tv.onside.app.uitests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 1;
-				TEST_TARGET_NAME = OnsideTV;
-			};
-			name = Debug;
-		};
-		B70000000000000000000009 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = EL9V67G3NB;
-				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = tv.onside.app.uitests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = 1;
-				TEST_TARGET_NAME = OnsideTV;
-			};
-			name = Release;
-		};
 		A1B2C3D40000000000000008 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -418,6 +382,42 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		B70000000000000000000008 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = EL9V67G3NB;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = tv.onside.app.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = OnsideTV;
+			};
+			name = Debug;
+		};
+		B70000000000000000000009 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = EL9V67G3NB;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = tv.onside.app.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_TARGET_NAME = OnsideTV;
 			};
 			name = Release;
 		};
@@ -619,20 +619,20 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		B70000000000000000000007 /* Build configuration list for PBXNativeTarget "OnsideTVUITests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				B70000000000000000000008 /* Debug */,
-				B70000000000000000000009 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		A1B2C3D40000000000000007 /* Build configuration list for PBXNativeTarget "OnsideTVWidget" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A1B2C3D40000000000000008 /* Debug */,
 				A1B2C3D40000000000000009 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B70000000000000000000007 /* Build configuration list for PBXNativeTarget "OnsideTVUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B70000000000000000000008 /* Debug */,
+				B70000000000000000000009 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
