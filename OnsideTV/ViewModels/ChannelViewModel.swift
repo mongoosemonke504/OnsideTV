@@ -1582,6 +1582,11 @@ class ChannelViewModel: ObservableObject {
     // the whole channel UI while the Sports hub warmed matchups in the
     // background.
     var preResolvedCache: [String: StreamChannel] = [:]
+    /// Channel → the game it was opened for, set whenever a game tap plays a
+    /// channel. The player shows THIS game's score rather than guessing one
+    /// from the channel and the guide, which once put a Kraken score on a
+    /// Bengals stream.
+    var launchedGameIDs: [Int: String] = [:]
 
     /// One game to resolve in the background, worked out on the main actor
     /// where the event's properties live.
@@ -1902,6 +1907,7 @@ class ChannelViewModel: ObservableObject {
         }
 
         if let gid = gameID, let cached = preResolvedCache[gid] {
+            launchedGameIDs[cached.id] = gid
             self.isSearchingGame = false
             withAnimation(.easeInOut(duration: 0.4)) { self.channelToAutoPlay = cached }
             self.prewarmChannel(cached)
@@ -1945,7 +1951,10 @@ class ChannelViewModel: ObservableObject {
                     self.suggestedChannels = [winner]
                     withAnimation(.easeInOut(duration: 0.4)) { self.channelToAutoPlay = winner }
                     self.prewarmChannel(winner)
-                    if let gid = gameID { self.preResolvedCache[gid] = winner }
+                    if let gid = gameID {
+                        self.preResolvedCache[gid] = winner
+                        self.launchedGameIDs[winner.id] = gid
+                    }
                 }
                 return
             }

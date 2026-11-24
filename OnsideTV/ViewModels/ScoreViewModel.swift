@@ -1153,26 +1153,44 @@ class ScoreViewModel: ObservableObject {
         return answer
     }
 
+    /// A live game by its id, from everything currently loaded. For the game
+    /// a stream was launched for.
+    func liveGame(id: String) -> ESPNEvent? {
+        for games in masterGames.values {
+            if let game = games.first(where: { $0.id == id }), game.status.type.state == "in" { return game }
+        }
+        for sections in masterSectionsMap.values {
+            for section in sections {
+                if let game = section.games.first(where: { $0.id == id }), game.status.type.state == "in" { return game }
+            }
+        }
+        return nil
+    }
+
     private func resolveLiveGame(for channel: StreamChannel, currentEPGTitle: String?, live: [ESPNEvent]) -> ESPNEvent? {
         if live.isEmpty { return nil }
 
-        let channelLower = channel.name.lowercased()
         let epgLower = (currentEPGTitle ?? "").lowercased()
 
-        // 1) Broadcast name overlaps the channel name
+        // 1) Both teams named together, in the guide title or the channel's
+        // own name, at least one of them in full. The same test the game
+        // search uses to decide a channel IS a game.
+        let titleWords = SmartSearchLogic.words(currentEPGTitle ?? "")
+        let nameWords = SmartSearchLogic.words(channel.name)
         if let match = live.first(where: { ev in
-            guard let bn = ev.broadcastName?.lowercased(), !bn.isEmpty else { return false }
-            return channelLower.contains(bn) || bn.contains(channelLower)
+            guard !ev.isFieldEvent,
+                  let home = ev.homeCompetitor?.team, let away = ev.awayCompetitor?.team else { return false }
+            let homeSide = SmartSearchLogic.SideNames.team(home)
+            let awaySide = SmartSearchLogic.SideNames.team(away)
+            for words in [titleWords, nameWords] where !words.isEmpty {
+                let h = SmartSearchLogic.sideMatch(words, homeSide)
+                let a = SmartSearchLogic.sideMatch(words, awaySide)
+                if h != .none && a != .none && (h == .full || a == .full) { return true }
+            }
+            return false
         }) { return match }
 
-        // 2) Both team display names appear in the EPG title
         if !epgLower.isEmpty {
-            if let match = live.first(where: { ev in
-                let home = (ev.homeCompetitor?.team?.shortDisplayName ?? ev.homeCompetitor?.team?.displayName ?? "").lowercased()
-                let away = (ev.awayCompetitor?.team?.shortDisplayName ?? ev.awayCompetitor?.team?.displayName ?? "").lowercased()
-                guard !home.isEmpty && !away.isEmpty else { return false }
-                return epgLower.contains(home) && epgLower.contains(away)
-            }) { return match }
 
             // 2b) Athlete sports (tennis): both players' last names in the
             // EPG title — titles carry "Muchova" but never "K. Muchova".
@@ -1195,6 +1213,18 @@ class ScoreViewModel: ObservableObject {
                 return parts.allSatisfy { epgLower.contains($0) }
             }) { return match }
         }
+
+        // 4) Last resort: the broadcaster's name, as whole words, in the
+        // channel name, and ONLY when a single live game is on that
+        // broadcaster. This used to come first and take the first live game
+        // whose broadcaster overlapped the channel name at all, which is how
+        // a Bengals stream got a Kraken score.
+        let channelWords = Set(nameWords)
+        let onThisBroadcaster = live.filter { ev in
+            let broadcaster = Set(SmartSearchLogic.words(ev.broadcastName ?? ""))
+            return !broadcaster.isEmpty && broadcaster.isSubset(of: channelWords)
+        }
+        if onThisBroadcaster.count == 1 { return onThisBroadcaster[0] }
 
         return nil
     }

@@ -368,6 +368,39 @@ struct CustomVideoPlayerView: SwiftUI.View {
         }
     }
 
+    /// Tapping the score opens the game's card, the same one a game opens
+    /// from the Sports section. The card is drawn at the app's root, under
+    /// this full-screen player, so the player first drops into the mini
+    /// player (exactly as a swipe down does) and the game keeps playing there;
+    /// the card opens once the player has gone.
+    private func openGameStats(_ game: ESPNEvent) {
+        guard let svm = scoreViewModel else { return }
+        viewModel?.triggerHaptic(.light)
+        let screenHeight = UIScreen.main.bounds.height
+        let duration = 0.28
+        withAnimation(.easeIn(duration: duration)) {
+            dismissDrag.value = screenHeight
+        }
+        let vm = viewModel
+        let departingChannel = channel
+        let departingRecording = recording
+        DispatchQueue.main.async {
+            vm?.miniPlayerRecording = departingRecording
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
+                vm?.miniPlayerChannel = departingChannel
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.03) {
+            var t = Transaction()
+            t.disablesAnimations = true
+            withTransaction(t) { onDismiss?() }
+            // A beat for the cover to finish going before the card arrives.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                svm.deepLinkRequest = svm.makeDetailRequest(for: game, sport: svm.sportType(for: game))
+            }
+        }
+    }
+
     /// Live ESPN score badge — only shown when `ScoreViewModel.liveGame(for:)` finds a match.
     /// In portrait bottom mode, always shown. In fullscreen/landscape, only shown when controls are visible.
     @ViewBuilder
@@ -380,27 +413,29 @@ struct CustomVideoPlayerView: SwiftUI.View {
             if isPortraitBottom {
                 // Bottom position for portrait split mode — always visible
                 VStack {
-                    LiveScoreBadge(game: game)
+                    Button { openGameStats(game) } label: { LiveScoreBadge(game: game) }
+                        .buttonStyle(.plain)
                         .padding(.vertical, 12)
                         .padding(.horizontal, 16)
                 }
                 .frame(maxWidth: .infinity)
                 .background(Color.black.opacity(0.3))
-                .allowsHitTesting(false)
                 .transition(.opacity)
             } else {
                 // Top position for landscape/fullscreen — shown when controls visible
                 VStack {
-                    LiveScoreBadge(game: game)
+                    Button { openGameStats(game) } label: { LiveScoreBadge(game: game) }
+                        .buttonStyle(.plain)
                         // 44pt is the button row's own height, so centring in it
                         // puts the badge on the buttons' centre line without
                         // either having to know the other's size.
                         .applyIf(matchesButtonRow) { $0.frame(height: 44) }
                         .padding(.top, topInset)
+                    // Empty space takes no taps, so the video under it still
+                    // toggles the controls; only the badge is a button.
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
-                .allowsHitTesting(false)
                 .transition(.opacity)
             }
         }
@@ -687,6 +722,10 @@ struct CustomVideoPlayerView: SwiftUI.View {
         // A recording is not live, whatever its name matches today.
         guard !isRecordingPlayback, let svm = scoreViewModel else { return nil }
         let active = currentChannel ?? channel
+        // Opened from a game: that game, while it's live.
+        if let id = viewModel?.launchedGameIDs[active.id], let game = svm.liveGame(id: id) {
+            return game
+        }
         return svm.liveGame(for: active,
                             currentEPGTitle: viewModel?.getCurrentProgram(for: active)?.title)
     }
