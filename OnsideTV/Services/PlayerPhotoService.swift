@@ -36,7 +36,9 @@ actor PlayerPhotoService {
 
     init() {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        cacheURL = dir.appendingPathComponent("playerPhotos-v1.json")
+        // v2: football squads now take TheSportsDB's clean cutouts first, so
+        // the Wikipedia photos v1 cached in their place are dropped.
+        cacheURL = dir.appendingPathComponent("playerPhotos-v2.json")
         cache = (try? JSONDecoder().decode([String: String].self, from: Data(contentsOf: cacheURL))) ?? [:]
     }
 
@@ -98,30 +100,38 @@ actor PlayerPhotoService {
         }
         guard !pending.isEmpty else { return result }
 
-        // Pass 1: one batched request per 45 names.
+        // Football: TheSportsDB first. Its cutouts are transparent-background
+        // headshots that sit cleanly in the circles; Wikipedia's lead images
+        // are whatever photo the article has, backgrounds and all. Wikipedia
+        // then covers only the players TheSportsDB has no picture of.
+        var toWikipedia = pending
+        /// Wikipedia hits standing in for a TheSportsDB lookup that never
+        /// answered (rate limit, network). Shown, but not cached, so the
+        /// cutout replaces them next time.
+        var provisional = Set<String>()
+        if Self.usesSportsDBFallback(sport) {
+            let pass = await sportsDBPass(pending)
+            for (name, url) in pass.found { result[name] = url }
+            toWikipedia = pending.filter { pass.found[$0] == nil }
+            provisional = Set(toWikipedia).subtracting(pass.definiteMisses)
+        }
+
+        // One batched Wikipedia request per 45 names.
         var stillMissing: [String] = []
-        for chunk in stride(from: 0, to: pending.count, by: Self.batchSize).map({
-            Array(pending[$0..<min($0 + Self.batchSize, pending.count)])
+        for chunk in stride(from: 0, to: toWikipedia.count, by: Self.batchSize).map({
+            Array(toWikipedia[$0..<min($0 + Self.batchSize, toWikipedia.count)])
         }) {
             let found = await lookup(titles: chunk, keywords: keywords)
             for name in chunk {
                 if let url = found[name] { result[name] = url } else { stillMissing.append(name) }
             }
         }
+        // Only an answered "no photo" anywhere is remembered as a miss; caching
+        // a lookup that never answered would leave a squad photo-less for good.
+        let confirmedMisses = Set(stillMissing).subtracting(provisional)
 
-        // Pass 2: whoever's left, one at a time, through TheSportsDB.
-        var confirmedMisses = Set(stillMissing)
-        if !stillMissing.isEmpty, Self.usesSportsDBFallback(sport) {
-            let pass = await sportsDBPass(stillMissing)
-            for (name, url) in pass.found { result[name] = url }
-            // Only a lookup that came back with a definite "no photo" is
-            // remembered as a miss. A rate-limited or offline lookup answers
-            // neither way, and caching those is what would leave a whole squad
-            // permanently photo-less after one bad moment on the network.
-            confirmedMisses = pass.definiteMisses
-        }
-
-        for (name, url) in result { cache[key + "|" + Self.normalize(name)] = url }
+        let toCache = result.filter { !provisional.contains($0.key) }
+        for (name, url) in toCache { cache[key + "|" + Self.normalize(name)] = url }
         for name in confirmedMisses { cache[key + "|" + Self.normalize(name)] = "" }
         persist()
         return result

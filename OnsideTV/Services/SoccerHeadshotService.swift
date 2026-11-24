@@ -21,8 +21,11 @@ actor SoccerHeadshotService {
 
     init() {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        // v3: adds birth dates alongside photo URLs.
-        cacheURL = dir.appendingPathComponent("soccerHeadshots-v3.json")
+        // v4: TheSportsDB's old public key ("3") started answering 403, so
+        // every lookup fell through to Wikipedia's photos and those were
+        // cached. Its current free key is "123"; a fresh cache lets the clean
+        // cutouts replace them.
+        cacheURL = dir.appendingPathComponent("soccerHeadshots-v4.json")
         cache = (try? JSONDecoder().decode([String: PlayerInfo].self, from: Data(contentsOf: cacheURL))) ?? [:]
     }
 
@@ -46,6 +49,11 @@ actor SoccerHeadshotService {
             cache[key] = info
             persist()
             return info
+        case .provisional(let info):
+            // TheSportsDB didn't answer, so this is Wikipedia's photo standing
+            // in. Shown, never cached: the clean cutout gets its chance next
+            // time instead of being locked out by the stand-in.
+            return info
         case .failed:
             // Rate limit or network hiccup: do NOT cache, so the next game
             // open (or retry) can still succeed. Caching these is what made
@@ -56,6 +64,7 @@ actor SoccerHeadshotService {
 
     private enum LookupResult {
         case resolved(PlayerInfo)
+        case provisional(PlayerInfo)
         case failed
     }
 
@@ -82,15 +91,18 @@ actor SoccerHeadshotService {
         case (.resolved(let db), .failed):
             return db.url.isEmpty ? .failed : .resolved(db)
         case (.failed, .resolved(let wk)):
-            return wk.url.isEmpty ? .failed : .resolved(wk)
+            return wk.url.isEmpty ? .failed : .provisional(wk)
         case (.failed, .failed):
+            return .failed
+        default:
+            // Neither source returns a stand-in of its own.
             return .failed
         }
     }
 
     private func sportsDBLookup(_ name: String) async -> LookupResult {
         guard let encoded = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://www.thesportsdb.com/api/v1/json/3/searchplayers.php?p=\(encoded)") else { return .failed }
+              let url = URL(string: "https://www.thesportsdb.com/api/v1/json/123/searchplayers.php?p=\(encoded)") else { return .failed }
         guard let (data, response) = try? await URLSession.shared.data(from: url),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let decoded = try? JSONDecoder().decode(SearchResponse.self, from: data) else { return .failed }
