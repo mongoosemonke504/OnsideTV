@@ -710,3 +710,11 @@ struct GlassEffect: ViewModifier {
         }
     }
 }
+/// How long a chip tap takes to page the Sports or Search pager across
+/// several tabs: the usual quarter second for a neighbour, a little more for
+/// each tab crossed so a long jump doesn't blur past, capped so it never drags.
+enum PagerJump {
+    static func duration(steps: Int) -> Double {
+        min(0.25 + 0.06 * Double(max(steps - 1, 0)), 0.45)
+    }
+}

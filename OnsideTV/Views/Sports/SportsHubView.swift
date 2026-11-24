@@ -241,7 +241,30 @@ struct SportsHubView: View {
     /// position, which is the thing the old shared scroll could not do.
     private func selectTab(_ newTab: SportsTab) {
         guard newTab != sportsTab else { return }
-        withAnimation(.easeInOut(duration: 0.25)) { sportsTab = newTab }
+        let tabs = orderedTabs
+        guard let from = tabs.firstIndex(of: sportsTab), let to = tabs.firstIndex(of: newTab),
+              abs(to - from) > 1 else {
+            withAnimation(.easeInOut(duration: 0.25)) { sportsTab = newTab }
+            return
+        }
+        // A jump of more than one chip. The pager scrolls across every tab in
+        // between, and those were blank (only a tab's neighbours are built),
+        // with the page being left blanking out the moment the selection
+        // changed. Build the whole path, crests included, then slide on the
+        // next frame, so the move travels through real pages.
+        let path = min(from, to)...max(from, to)
+        for index in path {
+            if case .sport(let sport) = tabs[index] { scoreViewModel.prefetchLogos(for: sport) }
+        }
+        transitToken += 1
+        let token = transitToken
+        transitMount = path
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: PagerJump.duration(steps: abs(to - from)))) { sportsTab = newTab }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                if transitToken == token { transitMount = nil }
+            }
+        }
     }
 
     /// Warms the crests for the chips either side of the current one.
@@ -310,8 +333,14 @@ struct SportsHubView: View {
         let tabs = orderedTabs
         guard let here = tabs.firstIndex(of: sportsTab),
               let there = tabs.firstIndex(of: tab) else { return tab == sportsTab }
+        if let path = transitMount, path.contains(there) { return true }
         return abs(here - there) <= 1
     }
+
+    /// Tabs kept built for the length of a chip jump across several sports,
+    /// so the pager slides through real pages instead of blank ones.
+    @State private var transitMount: ClosedRange<Int>? = nil
+    @State private var transitToken = 0
 
     /// One sport tab as its own independently scrolling page.
     ///
@@ -1971,9 +2000,9 @@ struct SportSelectorView: View {
                             }
                         }) {
                             Text("All")
-                                .font(.caption.bold())
-                                .padding(.vertical, 8)
-                                .padding(.horizontal, 16)
+                                .font(.subheadline.bold())
+                                .padding(.vertical, 10)
+                                .padding(.horizontal, 18)
                                 .backgroundTintedChip(isSelected: allMode.wrappedValue)
                                 .clipShape(Capsule())
                         }
@@ -1988,19 +2017,18 @@ struct SportSelectorView: View {
                             action()
                         }) {
                             Text(scoreViewModel.getSportName(s) + (s == .pinned ? " (\(pinnedCount))" : ""))
-                                .font(.caption.bold())
-                                .padding(.vertical, 8)
-                                .padding(.horizontal, 16)
+                                .font(.subheadline.bold())
+                                .padding(.vertical, 10)
+                                .padding(.horizontal, 18)
                                 .backgroundTintedChip(isSelected: (allMode?.wrappedValue == false || allMode == nil) && selectedSport == s)
                                 .clipShape(Capsule())
                         }
                         .id(s)
                     }
                 }
-                // Trimmed from 10. The chips keep their own pill padding, so
-                // they are the same size; it is the gap around the row that
-                // was making the pinned header taller than it needs to be.
-                .padding(.vertical, 6)
+                // Room above and below the pills, so the selected one's
+                // outline isn't clipped by the scroll view's edges.
+                .padding(.vertical, 8)
             }
             // The side margins as CONTENT MARGINS of the scroll view, not
             // padding on the row inside it. Padding is part of the content,

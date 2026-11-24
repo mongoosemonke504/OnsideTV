@@ -81,6 +81,10 @@ struct SearchView: View {
     }
 
     @State private var scope: Scope = .all
+    /// Pages kept built for the length of a chip jump across several scopes,
+    /// so the pager slides through real pages instead of blank ones.
+    @State private var transitMount: ClosedRange<Int>? = nil
+    @State private var transitToken = 0
 
     /// Live scroll depth of the ACTIVE page, driving the header slide. A LEAF,
     /// so a scroll frame moves the header and re-renders nothing else. Same
@@ -103,6 +107,15 @@ struct SearchView: View {
     /// Plain `@State`, unlike the per-frame scroll depth: it is written only
     /// when an inset is first learned or changes, which is once per page.
     @State private var pageInsets: [String: CGFloat] = [:]
+    /// Each scope page's own scroll depth, as the Sports hub keeps them.
+    @State private var pageDepths: [String: CGFloat] = [:]
+
+    /// Points the header at a scroll depth: how far it has slid, and how far
+    /// the compact title has grown in. The Sports hub's, unchanged.
+    private func applyHeaderDepth(_ scrolled: CGFloat) {
+        headerScroll.set(scrolled)
+        titleProgress.set(min(max(scrolled / max(bigTitleHeight, 1), 0), 1))
+    }
 
     /// How much a page must leave clear at its top, given the inset its
     /// scroll view has ALREADY applied.
@@ -216,7 +229,25 @@ struct SearchView: View {
     /// `TabView` selection. Silent: no chip row in the app buzzes.
     private func setScope(_ target: Scope) {
         guard target != scope else { return }
-        withAnimation(.easeInOut(duration: 0.25)) { scope = target }
+        let all = Scope.allCases
+        guard let from = all.firstIndex(of: scope), let to = all.firstIndex(of: target) else {
+            withAnimation(.easeInOut(duration: 0.25)) { scope = target }
+            return
+        }
+        // Every tap, even to the next chip: build the pages on the way (and
+        // keep the one being left) FIRST, then slide on the next frame. Doing
+        // both in one frame meant pages were mounting while the pager started
+        // its scroll, and when one of them took a moment to build the pager
+        // gave up and snapped straight to the new scope instead of sliding.
+        transitToken += 1
+        let token = transitToken
+        transitMount = min(from, to)...max(from, to)
+        DispatchQueue.main.async {
+            withAnimation(.easeInOut(duration: PagerJump.duration(steps: abs(to - from)))) { scope = target }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                if transitToken == token { transitMount = nil }
+            }
+        }
     }
 
     private var nameMatches: [StreamChannel] { viewModel.filteredNameChannels }
@@ -252,6 +283,7 @@ struct SearchView: View {
         let all = Scope.allCases
         guard let here = all.firstIndex(of: scope),
               let there = all.firstIndex(of: s) else { return s == scope }
+        if let path = transitMount, path.contains(there) { return true }
         return abs(here - there) <= 1
     }
 
@@ -268,20 +300,34 @@ struct SearchView: View {
             // The header's height, plus clearance. The scroll view supplies
             // the status bar and chrome row itself as a safe-area content
             // inset; `reserve` subtracts whatever it measured.
-            .padding(.top, reserve(insetTop: pageInsets[s.rawValue] ?? 0))
+            // One inset for every scoped page: they all sit in the same pager,
+            // so the pager applies the same one to each. Keyed per page, a page
+            // that had never been on screen (the ones a chip jump slides past)
+            // had nothing measured, laid out a chrome row too low, and snapped
+            // up mid-slide when it measured, redrawing the screen as it did.
+            .padding(.top, reserve(insetTop: pageInsets["pager"] ?? 0))
             // Clearance for the floating dock — results scroll behind its
             // translucent slab instead of stopping above it.
             .padding(.bottom, 118)
         }
-        .onScrollGeometryChange(for: ScrollGeometry.self) { $0 } action: { _, geo in
-            let y = geo.contentOffset.y + geo.contentInsets.top
-            if pageInsets[s.rawValue] != geo.contentInsets.top {
-                pageInsets[s.rawValue] = geo.contentInsets.top
-            }
-            guard s == scope else { return }
+        // The same two readings the Sports pages take. The offset alone, not
+        // the whole ScrollGeometry: watching the whole thing fired on every
+        // size and inset change too, which a page sliding through the pager
+        // produces on every frame, and that is what made Search's slide
+        // rougher than Sports'.
+        .onScrollGeometryChange(for: CGFloat.self) { geo in
+            geo.contentOffset.y + geo.contentInsets.top
+        } action: { _, y in
             let scrolled = max(0, y)
-            headerScroll.set(scrolled)
-            titleProgress.set(min(max(scrolled / max(bigTitleHeight, 1), 0), 1))
+            // Recorded for every page, so a tab change can hand the header
+            // the depth of the page it lands on...
+            pageDepths[s.rawValue] = scrolled
+            // ...but only the page you are on may move the header.
+            guard s == scope else { return }
+            applyHeaderDepth(scrolled)
+        }
+        .onScrollGeometryChange(for: CGFloat.self) { $0.contentInsets.top } action: { _, top in
+            if pageInsets["pager"] != top { pageInsets["pager"] = top }
         }
     }
 
@@ -409,6 +455,9 @@ struct SearchView: View {
         .onChangeCompat(of: queryText) { newValue in
             scheduleSearchPush(newValue)
         }
+        .onChangeCompat(of: scope) { newScope in
+            applyHeaderDepth(pageDepths[newScope.rawValue] ?? 0)
+        }
         // The section is gone; nothing it scheduled may land after it.
         .onDisappear { pushTask?.cancel() }
         // Teams and leagues come from the already-loaded catalog, so they are
@@ -463,21 +512,45 @@ struct SearchView: View {
             .padding(.bottom, 16)
     }
 
+    /// The scope chips, built exactly like the Sports hub's chip row
+    /// (`SportSelectorView`): the same chips, the same 6pt of vertical room
+    /// inside the scroll view (without it the selected chip's white outline
+    /// was clipped top and bottom), the same edge margins, and the same
+    /// scroll-the-selected-chip-into-view behaviour.
     private var scopeChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(Scope.allCases, id: \.self) { s in
-                    Button {
-                        setScope(s)
-                    } label: {
-                        NuvioChipLabel(title: s.rawValue, isSelected: scope == s)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(Scope.allCases, id: \.self) { s in
+                        Button {
+                            setScope(s)
+                        } label: {
+                            Text(s.rawValue)
+                                .font(.subheadline.bold())
+                                .padding(.vertical, 10)
+                                .padding(.horizontal, 18)
+                                .backgroundTintedChip(isSelected: scope == s)
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .id(s)
                     }
-                    .buttonStyle(.plain)
+                }
+                .padding(.vertical, 8)
+            }
+            .contentMargins(.horizontal, 16, for: .scrollContent)
+            .onChangeCompat(of: scope) { s in
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.9)) {
+                    proxy.scrollTo(s, anchor: nil)
                 }
             }
-            .padding(.horizontal, 20)
+            .onAppear {
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { proxy.scrollTo(scope, anchor: .center) }
+            }
         }
-        .padding(.top, 8)
+        .padding(.top, 2)
     }
 
     // MARK: - Live games (empty query)
