@@ -504,7 +504,9 @@ public class PlayerEngine: NSObject, ObservableObject {
     }
     
     private func handleStuckBuffer() {
-        guard currentBackend == .vlc, currentURL != nil, !userPaused else { return }
+        // VLC handed the stream to the PiP window on purpose; reloading it
+        // would take the connection straight back.
+        guard currentBackend == .vlc, currentURL != nil, !userPaused, !vlcSuspendedForPiP else { return }
         print("🚨 [NebuloEngine] Buffer stuck for >20s or playback stalled. Reloading VLC...")
         stopBufferWatchdog()
         // Through `reloadCurrentStream()`, not `play(url:)`: the latter
@@ -869,6 +871,38 @@ public class PlayerEngine: NSObject, ObservableObject {
     /// A manual PiP-button tap arrived before the side player was ready.
     private var startPiPWhenReady = false
 
+    /// The PiP side player's item, on AVPlayer's own live defaults.
+    ///
+    /// Asking it to sit 18s behind live with a 30s forward buffer was tried
+    /// and is wrong for IPTV: these playlists only keep a short window, so
+    /// the offset fell outside it and the player waited forever without ever
+    /// starting. The defaults stay at the live edge, which the window has.
+    private static func makePiPItem(_ url: URL) -> AVPlayerItem {
+        let item = AVPlayerItem(url: url)
+        item.canUseNetworkResourcesForLiveStreamingWhilePaused = true
+        return item
+    }
+
+    /// Stops VLC once the PiP window has the stream. Not before: a provider
+    /// keeps counting a closed connection for a few seconds, so handing over
+    /// first had the PiP player refused and left the video with nothing.
+    private func suspendVLCForPiP() {
+        guard currentBackend == .vlc, !vlcSuspendedForPiP else { return }
+        vlcSuspendedForPiP = true
+        vlcMediaPlayer.stop()
+        // VLC tearing down its audio unit must not take the shared session
+        // down with it.
+        try? AVAudioSession.sharedInstance().setActive(true)
+    }
+
+    /// PiP didn't happen after all: give the stream back to VLC.
+    private func resumeVLCAfterPiPFailure() {
+        teardownPiPPlayer()
+        guard vlcSuspendedForPiP, currentBackend == .vlc else { return }
+        vlcSuspendedForPiP = false
+        vlcMediaPlayer.play()
+    }
+
     /// Arms the auto-PiP side-channel for the current VLC stream. Safe to
     /// call repeatedly; no-ops when already armed or unsupported.
     public func armAutoPiP() {
@@ -877,8 +911,10 @@ public class PlayerEngine: NSObject, ObservableObject {
               let url = currentURL,
               pipAVPlayer == nil else { return }
 
-        let item = AVPlayerItem(url: url)
+        let item = Self.makePiPItem(url)
         let player = AVPlayer(playerItem: item)
+        // Silent while VLC still has the screen and the sound; it's unmuted
+        // as the window opens.
         player.isMuted = true
         let layer = AVPlayerLayer(player: player)
         layer.videoGravity = .resizeAspect
@@ -898,7 +934,7 @@ public class PlayerEngine: NSObject, ObservableObject {
                 switch item.status {
                 case .readyToPlay:
                     self.pipStatusObservation = nil
-                    player.play()
+                    player.playImmediately(atRate: 1.0)
                     let controller = AVPictureInPictureController(playerLayer: layer)
                     // Never automatically. Once a side channel exists — after
                     // the user has used PiP once — leaving the app would
@@ -907,17 +943,16 @@ public class PlayerEngine: NSObject, ObservableObject {
                     controller?.canStartPictureInPictureAutomaticallyFromInline = false
                     controller?.delegate = self
                     self.pipController = controller
-                    if self.startPiPWhenReady {
-                        self.startPiPWhenReady = false
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                            controller?.startPictureInPicture()
-                        }
-                    }
+                    // Open the window NOW. It can't wait for the side player to
+                    // be moving: on a one-connection line it only gets the
+                    // stream once VLC lets go, and VLC lets go when the window
+                    // opens (didStart). Waiting meant the window never came.
+                    if self.startPiPWhenReady { self.startPendingPiP() }
                 case .failed:
                     // Raw TS/unsupported container — AVPlayer can't carry
                     // this stream; PiP simply stays unavailable for it.
                     print("⚠️ [NebuloEngine] PiP side-player failed: \(item.error?.localizedDescription ?? "unknown")")
-                    self.teardownPiPPlayer()
+                    self.resumeVLCAfterPiPFailure()
                 default:
                     break
                 }
@@ -934,7 +969,7 @@ public class PlayerEngine: NSObject, ObservableObject {
         guard Date().timeIntervalSince(lastPiPRecovery) > 3 else { return }
         lastPiPRecovery = Date()
         print("🔄 [NebuloEngine] PiP side-player reconnecting")
-        let item = AVPlayerItem(url: url)
+        let item = Self.makePiPItem(url)
         attachPiPItemObservers(item)
         player.replaceCurrentItem(with: item)
         player.play()
@@ -969,7 +1004,10 @@ public class PlayerEngine: NSObject, ObservableObject {
     private func verifyThenRecoverPiP(treatPausedAsDead: Bool = false) {
         guard let player = pipAVPlayer else { return }
         let mark = player.currentTime()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
+        // Long enough for AVPlayer to dig itself out of a slow segment; a
+        // reconnect is a fresh start at the live edge, which is itself a
+        // pause, so it's only for a stream that's genuinely stuck.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) { [weak self] in
             guard let self, let player = self.pipAVPlayer else { return }
             let advanced = CMTimeGetSeconds(CMTimeSubtract(player.currentTime(), mark))
             let item = player.currentItem
@@ -992,8 +1030,9 @@ public class PlayerEngine: NSObject, ObservableObject {
                 switch p.timeControlStatus {
                 case .waitingToPlayAtSpecifiedRate:
                     // Buffering is normal; buffering that never ends is a
-                    // dead connection. Give it 5s, then reconnect.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+                    // dead connection. Reconnecting restarts the stream, a
+                    // pause of its own, so it waits 12s rather than 5.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 12.0) { [weak self] in
                         guard let self, let player = self.pipAVPlayer, player === p,
                               player.timeControlStatus == .waitingToPlayAtSpecifiedRate else { return }
                         self.recoverPiPSidePlayer()
@@ -1031,8 +1070,24 @@ public class PlayerEngine: NSObject, ObservableObject {
             controller.startPictureInPicture()
         } else {
             startPiPWhenReady = true
+            // VLC keeps playing until the window is up (see suspendVLCForPiP).
             armAutoPiP()
+            // If the window still isn't up after 8s, the attempt is over:
+            // drop the side player and leave VLC playing as it was.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8.0) { [weak self] in
+                guard let self, self.startPiPWhenReady, !self.isPiPSessionActive else { return }
+                print("⚠️ [NebuloEngine] PiP didn't start in time; staying inline")
+                self.resumeVLCAfterPiPFailure()
+            }
         }
+    }
+
+    /// Opens the window for a tap that was waiting on the side player.
+    private func startPendingPiP() {
+        guard startPiPWhenReady, let controller = pipController else { return }
+        startPiPWhenReady = false
+        pipAVPlayer?.isMuted = false
+        controller.startPictureInPicture()
     }
 
     /// Tears down the PiP side-player. Deliberately leaves
@@ -1147,11 +1202,9 @@ extension PlayerEngine: AVPictureInPictureControllerDelegate {
         // connection IPTV servers would starve the PiP player of the
         // very stream it's showing.
         if currentBackend == .vlc {
-            vlcSuspendedForPiP = true
-            vlcMediaPlayer.stop()
-            // VLC tearing down its audio unit must not take the shared
-            // session down with it.
-            try? AVAudioSession.sharedInstance().setActive(true)
+            // The window is up: VLC lets go of the stream so the side player
+            // has the connection to itself.
+            suspendVLCForPiP()
             // No quality change here. The side player is at full quality
             // from the moment it is built, so becoming the only thing on
             // screen asks nothing new of it. It used to be capped while
@@ -1160,6 +1213,18 @@ extension PlayerEngine: AVPictureInPictureControllerDelegate {
             // appearing to pause on entry to PiP.
             pipAVPlayer?.isMuted = false
             if pipAVPlayer?.timeControlStatus != .playing { pipAVPlayer?.play() }
+            // The hand-over can leave the side player stopped rather than
+            // waiting, and a stopped AVPlayer doesn't resume when data
+            // arrives: that was the window opening paused. Nudge it a few
+            // times while VLC's connection clears. Only in these first
+            // seconds, so a pause the user makes later is respected.
+            for delay in [0.4, 1.0, 2.0, 3.5] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self, self.isPiPSessionActive, let side = self.pipAVPlayer,
+                          side.timeControlStatus == .paused else { return }
+                    side.play()
+                }
+            }
         }
     }
 
@@ -1189,6 +1254,7 @@ extension PlayerEngine: AVPictureInPictureControllerDelegate {
 
     public func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, failedToStartPictureInPictureWithError error: Error) {
         print("⚠️ [NebuloEngine] PiP failed to start: \(error.localizedDescription)")
+        resumeVLCAfterPiPFailure()
     }
 
     public func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
