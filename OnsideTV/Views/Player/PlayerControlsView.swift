@@ -188,14 +188,10 @@ struct PlayerControlsView: View {
                                                 .foregroundStyle(.secondary)
                                                 .lineLimit(isDescriptionExpanded ? nil : 1)
                                                 .frame(width: geo.size.width - 40, alignment: .leading)
-                                                .id(isDescriptionExpanded)
-                                                .transition(.opacity)
                                                 .contentShape(Rectangle())
                                                 .onTapGesture {
                                                     ChannelViewModel.shared.triggerSelectionHaptic()
-                                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                                                        isDescriptionExpanded.toggle()
-                                                    }
+                                                    withoutAnimation { isDescriptionExpanded.toggle() }
                                                 }
                                         }
                                     }
@@ -577,19 +573,14 @@ struct PlayerControlsView: View {
                 // miniplayer for streams AVPlayer can't decode.
                 Button(action: {
                     vm.triggerSelectionHaptic()
-                    playerManager.enablePictureInPicture()
-                    // Give PiP a beat to appear; when it did, close the
-                    // full player (the floating window carries on). If the
-                    // stream can't PiP, fall back to the in-app miniplayer.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                        if playerManager.isPiPSessionActive {
-                            onDismiss()
-                        } else if !AVPictureInPictureController.isPictureInPictureSupported() {
-                            vm.miniPlayerRecording = recording
-                            vm.miniPlayerChannel = channel
-                            onDismiss()
-                        }
-                    }
+                    // Closes the full player once the window is up (it carries
+                    // on by itself), or falls back to the in-app miniplayer
+                    // for something that can't be floated.
+                    playerManager.enablePictureInPicture(onStarted: onDismiss, onUnavailable: {
+                        vm.miniPlayerRecording = recording
+                        vm.miniPlayerChannel = channel
+                        onDismiss()
+                    })
                 }) {
                     Image(systemName: "pip.enter")
                         .font(.system(size: 18, weight: .bold))

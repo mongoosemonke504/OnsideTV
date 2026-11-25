@@ -1280,6 +1280,10 @@ struct RecordingPlayerView: View {
                 if engine.currentTime > knownDuration || engine.currentTime < 0 {
                     engine.currentTime = 0
                 }
+                // Reopened from its PiP window: carry on from there.
+                if let file = currentRecording.localFileName, let time = engine.takePiPResume(for: file) {
+                    engine.seek(to: time)
+                }
             }
         }
         // When background remux finishes, `currentRecording.localFileName`

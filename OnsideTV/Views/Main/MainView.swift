@@ -186,7 +186,14 @@ struct MainView: SwiftUI.View {
         // that's playing. If the cover is still up, there's nothing to do —
         // the system just brings the app forward.
         .onReceive(NotificationCenter.default.publisher(for: .nebuloPiPRestore)) { _ in
-            guard selectedChannel == nil,
+            // A recording in the window goes back to the recording player.
+            if let file = PlayerEngine.shared.pipResumeFile {
+                guard selectedRecording == nil,
+                      let recording = RecordingManager.shared.recordings.first(where: { $0.localFileName == file }) else { return }
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { selectedRecording = recording }
+                return
+            }
+            guard selectedChannel == nil, PlayerEngine.shared.activeBackendName == "None",
                   let id = viewModel.lastPlayedChannelID,
                   let c = viewModel.channels.first(where: { $0.id == id }) else { return }
             withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { selectedChannel = c }
