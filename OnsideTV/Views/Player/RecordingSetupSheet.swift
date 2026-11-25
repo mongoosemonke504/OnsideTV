@@ -140,7 +140,10 @@ struct RecordingSetupSheet: View {
                     ForEach(SetupMode.allCases, id: \.self) { m in
                         Button {
                             ChannelViewModel.shared.triggerSelectionHaptic()
-                            withAnimation(.easeInOut(duration: 0.2)) { mode = m }
+                            // Snaps, highlight and content alike.
+                            var t = Transaction()
+                            t.disablesAnimations = true
+                            withTransaction(t) { mode = m }
                         } label: {
                             Text(m.rawValue)
                                 .font(.system(size: 14, weight: .semibold))
@@ -155,6 +158,7 @@ struct RecordingSetupSheet: View {
                         .buttonStyle(.plain)
                     }
                 }
+                .animation(nil, value: mode)
                 .padding(.horizontal, 22)
                 .padding(.bottom, 12)
 
@@ -172,6 +176,7 @@ struct RecordingSetupSheet: View {
                     }
                 }
                 .frame(height: verticalSizeClass == .compact ? 170 : 260, alignment: .top)
+                .animation(nil, value: mode)
 
                 Divider().background(Color.white.opacity(0.12))
 
