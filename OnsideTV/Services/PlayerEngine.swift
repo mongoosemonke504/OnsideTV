@@ -6,6 +6,7 @@ import MobileVLCKit
 import AVFoundation
 import AVKit
 import MediaPlayer
+import Network
 
 public class PlayerEngine: NSObject, ObservableObject {
     public static let shared = PlayerEngine()
@@ -194,6 +195,7 @@ public class PlayerEngine: NSObject, ObservableObject {
             self.pipAVLayer?.frame = self.renderView.bounds
         }
         setupPiPLifecycleObservers()
+        watchNetwork()
         LiveStreamRelay.removeLeftovers()
     }
 
@@ -349,6 +351,8 @@ public class PlayerEngine: NSObject, ObservableObject {
         setupAudioSession()
         if let current = currentURL, current == url, (isPlaying || isBuffering) { return }
         self.currentURL = url
+        if url != recoveringURL { recoveryAttempts = 0 }
+        recoveringURL = nil
         self.unexpectedPauseCount = 0
         stop()
         self.isBuffering = true
@@ -520,7 +524,109 @@ public class PlayerEngine: NSObject, ObservableObject {
         }
     }
     
+    // MARK: - Live recovery
+
+    /// A live stream that ended or broke, about to be opened again.
+    private var recoveryWork: DispatchWorkItem?
+    private var recoveryAttempts = 0
+    private var lastRecovery = Date.distantPast
+    /// The stream being recovered, so opening it again keeps the count.
+    private var recoveringURL: URL?
+
+    private let pathMonitor = NWPathMonitor()
+    private var networkUp = true
+    private var networkKind = ""
+    private var networkCheck: Timer?
+
+    /// Something that should still be playing: live, not paused by the user,
+    /// not handed to the PiP window.
+    private var shouldBeLive: Bool {
+        guard currentBackend == .vlc, let url = currentURL, !userPaused, !vlcSuspendedForPiP else { return false }
+        return !url.isFileURL && !url.absoluteString.contains("/timeshift/")
+    }
+
+    private var liveStreamIsDown: Bool {
+        switch vlcMediaPlayer.state {
+        case .ended, .stopped, .error:
+            return true
+        case .paused:
+            // A call, headphones pulled out: not ours to undo.
+            return false
+        default:
+            return Date().timeIntervalSince(lastMediaProgressTime) > 3.5
+        }
+    }
+
+    /// Opens a live stream that went down again, by itself. VLC treats a lost
+    /// connection as the end of the stream and simply stops, and nothing put
+    /// it back: that was having to press play after changing networks.
+    private func scheduleLiveRecovery() {
+        guard shouldBeLive, recoveryWork == nil, let url = currentURL else { return }
+        // It ran properly since the last time, so start counting over.
+        if Date().timeIntervalSince(lastRecovery) > 60 { recoveryAttempts = 0 }
+        let delay = min(1.5 * pow(2, Double(min(recoveryAttempts, 4))), 15)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.recoveryWork = nil
+            guard self.shouldBeLive, self.currentURL == url, self.liveStreamIsDown else { return }
+            guard self.networkUp else { return self.scheduleLiveRecovery() }
+            self.recoverLiveStream()
+        }
+        recoveryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func recoverLiveStream() {
+        recoveryWork?.cancel()
+        recoveryWork = nil
+        print("🔄 [NebuloEngine] Live stream went down; opening it again")
+        recoveryAttempts += 1
+        lastRecovery = Date()
+        recoveringURL = currentURL
+        reloadCurrentStream()
+    }
+
+    /// Wi-Fi to cellular and back. Connections made on the old network are
+    /// dead, sometimes without a word, so after a change the stream is watched
+    /// closely until it has either carried on or been opened again.
+    private func watchNetwork() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let up = path.status == .satisfied
+            let kind = path.usesInterfaceType(.wifi) ? "wifi"
+                : path.usesInterfaceType(.cellular) ? "cellular" : "other"
+            Task { @MainActor in self?.networkChanged(up: up, kind: kind) }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "player.network"))
+    }
+
+    private func networkChanged(up: Bool, kind: String) {
+        let first = networkKind.isEmpty
+        let changed = up && (!networkUp || kind != networkKind)
+        networkUp = up
+        if up { networkKind = kind }
+        guard changed, !first, shouldBeLive else { return }
+        recoveryAttempts = 0
+        var left = 20
+        networkCheck?.invalidate()
+        networkCheck = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] timer in
+            MainActor.assumeIsolated {
+                guard let self else { return timer.invalidate() }
+                left -= 1
+                if left == 0 { timer.invalidate() }
+                guard self.shouldBeLive, self.networkUp, self.liveStreamIsDown,
+                      Date().timeIntervalSince(self.lastRecovery) > 8 else { return }
+                self.recoverLiveStream()
+            }
+        }
+    }
+
+    private func cancelLiveRecovery() {
+        recoveryWork?.cancel()
+        recoveryWork = nil
+    }
+
     public func stop() {
+        cancelLiveRecovery()
         // Never carry a startup mute into the next stream.
         localStartUnmuteTimer?.invalidate(); localStartUnmuteTimer = nil
         vlcMediaPlayer.audio?.isMuted = false
@@ -886,6 +992,9 @@ public class PlayerEngine: NSObject, ObservableObject {
     /// The same, for the recording's player to pick up when it is reopened
     /// from the window's own button.
     private var pipResume: (file: String, time: Double)?
+    /// The relay got nothing from the provider, so AVPlayer is only being
+    /// tried in case.
+    private var pipIsLastResort = false
     private var onPiPStarted: (() -> Void)?
     private var onPiPUnavailable: (() -> Void)?
 
@@ -957,7 +1066,7 @@ public class PlayerEngine: NSObject, ObservableObject {
             guard url.pathExtension.lowercased() == "ts" else {
                 return armPiP(url: url)
             }
-            guard let index = await RecordingHLSServer.index(file: url) else {
+            guard let index = await RecordingHLSServer.index(file: url), !index.hevc else {
                 if attempt == pipAttempt { failPiP(unavailable: true) }
                 return
             }
@@ -979,15 +1088,19 @@ public class PlayerEngine: NSObject, ObservableObject {
         }
         let relay = LiveStreamRelay(source: url)
         pipRelay = relay
-        let address = await relay.start(timeout: 10)
+        let address = await relay.start(quiet: 14)
         guard attempt == pipAttempt else { return relay.stop() }
         if address == nil { pipRelay = nil }
         // Not something the relay carries: AVPlayer can read it itself.
+        pipIsLastResort = address == nil && !relay.isUnsupported
         armPiP(url: address ?? url)
     }
 
     private func armPiP(url: URL) {
-        guard currentBackend == .vlc, pipAVPlayer == nil else { return }
+        guard currentBackend == .vlc, pipAVPlayer == nil else { return failPiP(unavailable: false) }
+        // A recording in progress leaves the session shareable with other
+        // apps' audio, which is not a session iOS will float a window from.
+        setupAudioSession()
         let attempt = pipAttempt
 
         let item = makePiPItem(url)
@@ -1033,7 +1146,8 @@ public class PlayerEngine: NSObject, ObservableObject {
                     self.openPiPWhenPossible(layer: layer, attempt: attempt)
                 case .failed:
                     print("⚠️ [NebuloEngine] PiP side-player failed: \(item.error?.localizedDescription ?? "unknown")")
-                    self.failPiP(unavailable: true)
+                    // Refused for now is not the same as can't be floated.
+                    self.failPiP(unavailable: !self.pipIsLastResort)
                 default:
                     break
                 }
@@ -1225,6 +1339,7 @@ public class PlayerEngine: NSObject, ObservableObject {
         pipRelay?.stop()
         pipRelay = nil
         pipRecordingFile = nil
+        pipIsLastResort = false
         pipTimeControlObservation = nil
         pipItemNotifTokens.forEach { NotificationCenter.default.removeObserver($0) }
         pipItemNotifTokens = []
@@ -1313,10 +1428,13 @@ extension PlayerEngine: VLCMediaPlayerDelegate {
             if currentURL?.isFileURL == true {
                 self.playbackFailed = true
             } else {
-                handleStuckBuffer()
+                scheduleLiveRecovery()
             }
         case .ended, .stopped:
             self.isPlaying = false
+            // Ours to stop, or a live stream that fell over? The check happens
+            // when it comes due: by then a stream being changed has settled.
+            scheduleLiveRecovery()
         default:
             break
         }

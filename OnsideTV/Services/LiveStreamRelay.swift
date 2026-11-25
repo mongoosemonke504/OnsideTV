@@ -32,6 +32,7 @@ nonisolated final class LiveStreamRelay: @unchecked Sendable {
     private var reserve = 0.0
     private var unsupported = false
     private var opened = false
+    private var lastArrival = Date()
     private var task: Task<Void, Never>?
 
     private var server: LocalStreamServer!
@@ -43,6 +44,9 @@ nonisolated final class LiveStreamRelay: @unchecked Sendable {
     /// The most to hold back from the player, so the list it polls keeps
     /// moving while the provider doesn't.
     private static let longestReserve = 12.0
+
+    /// Video in hand before the window is opened.
+    private static let enoughToStart = 8.0
 
     init(source: URL) {
         self.source = source
@@ -64,23 +68,32 @@ nonisolated final class LiveStreamRelay: @unchecked Sendable {
     }
 
     /// Starts downloading, and answers once there is enough to play. Nil if
-    /// this isn't a stream it can carry or nothing came within `timeout`.
-    func start(timeout: TimeInterval) async -> URL? {
+    /// this isn't a stream it can carry, or the provider gave nothing for
+    /// `quiet` seconds. Once video is arriving it never gives up on it: slow
+    /// is not the same as refused.
+    func start(quiet: TimeInterval) async -> URL? {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let work = Task.detached(priority: .userInitiated) { [weak self] in
             await self?.run() ?? ()
         }
-        lock.withLock { task = work }
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline, !Task.isCancelled {
-            let (ready, refused) = lock.withLock { (opened, unsupported) }
-            if refused { break }
+        lock.withLock {
+            task = work
+            lastArrival = Date()
+        }
+        while !Task.isCancelled {
+            let (ready, refused, stopped, idle) = lock.withLock {
+                (opened, unsupported, task == nil, Date().timeIntervalSince(lastArrival))
+            }
+            if refused || stopped || idle > quiet { break }
             if ready { return await server.start() }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         stop()
         return nil
     }
+
+    /// Not a kind of stream this can carry.
+    var isUnsupported: Bool { lock.withLock { unsupported } }
 
     /// The provider is letting it read.
     var hasData: Bool { lock.withLock { !segments.isEmpty } }
@@ -240,8 +253,9 @@ nonisolated final class LiveStreamRelay: @unchecked Sendable {
     private func add(_ segment: Segment) {
         lock.withLock {
             segments.append(segment)
-            // Enough to start on; the rest of the list follows.
-            if segments.reduce(0, { $0 + $1.duration }) >= Self.longestReserve + 6 { opened = true }
+            lastArrival = Date()
+            // Enough to start on; the rest of the list follows while it plays.
+            if segments.reduce(0, { $0 + $1.duration }) >= Self.enoughToStart { opened = true }
             while segments.count > Self.keep, published > 8 {
                 try? FileManager.default.removeItem(at: segments.removeFirst().file)
                 published -= 1
@@ -268,8 +282,9 @@ nonisolated final class LiveStreamRelay: @unchecked Sendable {
     /// and from the reserve itself one segment at a time, as it comes due.
     private func publish() {
         func held() -> Double { segments[published...].reduce(0) { $0 + $1.duration } }
+        func given() -> Double { segments[..<published].reduce(0) { $0 + $1.duration } }
         let now = Date()
-        while published < segments.count, held() - segments[published].duration >= reserve || published == 0 {
+        while published < segments.count, held() - segments[published].duration >= reserve || given() < Self.enoughToStart {
             published += 1
             lastPublish = now
         }
