@@ -167,6 +167,20 @@ struct MainView: SwiftUI.View {
                 viewModel.triggerMultiView = false
             }
         }
+        .onChangeCompat(of: showMultiView) { shown in
+            if shown {
+                // The main player's stream goes now, whether it was full
+                // screen or minimised behind this: left running it is one
+                // more connection on the line and one more decoder, competing
+                // with the tiles.
+                viewModel.miniPlayerChannel = nil
+                PlayerEngine.shared.stop()
+            } else {
+                // However multi-view went away, nothing is over the app now.
+                MultiViewDismiss.shared.dragLock.set(false)
+                withAnimation(MainView.multiViewSlide) { MultiViewDismiss.shared.cover.set(0) }
+            }
+        }
         // PiP window's "back to full screen" button: the on-screen player
         // was dismissed behind the float, so re-present it for the channel
         // that's playing. If the cover is still up, there's nothing to do —
@@ -538,17 +552,19 @@ struct DockCoverMask: ViewModifier {
         let covered = max(cover.value, other.value)
         let uncovered = 1 - min(max(covered, 0), 1)
         return content
-            .mask(alignment: .leading) {
+            .mask {
                 Rectangle()
-                    // Constrained in X only. Given the mask's own height it
-                    // clipped the bar's bottom edge: the bar deliberately
-                    // draws OUTSIDE its layout bounds (it ignores the bottom
-                    // safe area to sit 20pt off the physical edge), and a mask
-                    // is clipped to those bounds. A full-screen height covers
-                    // everything it paints, however far past its frame that
-                    // goes.
-                    .frame(width: UIScreen.main.bounds.width * uncovered,
-                           height: UIScreen.main.bounds.height)
+                    // Taller than the bar's own layout: the bar deliberately
+                    // draws outside it (it ignores the bottom safe area to sit
+                    // 20pt off the physical edge).
+                    .padding(.vertical, -200)
+                    // Sized by the layout and scaled, never from
+                    // `UIScreen.main.bounds`. The mask is only re-evaluated
+                    // when a cover moves, so leaving multi-view while still in
+                    // landscape baked the landscape size in: a band 390pt tall
+                    // across the middle of a portrait screen, with the bar
+                    // outside it for good.
+                    .scaleEffect(x: uncovered, y: 1, anchor: .leading)
             }
             // A masked-away bar must not take taps meant for the page over it.
             .allowsHitTesting(uncovered > 0.5)
