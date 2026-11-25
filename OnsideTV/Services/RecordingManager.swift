@@ -21,10 +21,19 @@ class RecordingManager: NSObject, ObservableObject {
     /// still scheduled ahead; torn down on foreground and when idle.
     private var keepAlivePlayer: AVAudioPlayer?
 
+    /// Starts, stops and watches over recordings while any are under way or
+    /// ahead. A repeating check against the clock rather than a timer per
+    /// recording: one of those is lost with the app, and stands still while
+    /// the phone sleeps.
+    private var clock: Timer?
+    private var lastHeartbeat = Date.distantPast
+
     override init() {
         super.init()
         loadRecordings()
-        restoreActiveRecordings()
+        checkSchedules()
+        // Recordings scheduled before these existed.
+        for rec in recordings where rec.status == .scheduled { RecordingAlerts.schedule(for: rec) }
 
         NotificationCenter.default.addObserver(
             self, selector: #selector(appDidEnterBackground),
@@ -32,6 +41,73 @@ class RecordingManager: NSObject, ObservableObject {
         NotificationCenter.default.addObserver(
             self, selector: #selector(appDidBecomeActive),
             name: UIApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(audioInterrupted(_:)),
+            name: AVAudioSession.interruptionNotification, object: nil)
+    }
+
+    /// A call or another app's audio stops the silent loop that keeps the app
+    /// running; when it's over, the loop has to be started again by hand.
+    @objc private func audioInterrupted(_ note: Notification) {
+        let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+        guard raw == AVAudioSession.InterruptionType.ended.rawValue else { return }
+        holdBackground()
+    }
+
+    /// Makes sure the app is still being kept awake, if it is in the
+    /// background with something to record.
+    private func holdBackground() {
+        guard needsBackgroundRuntime, UIApplication.shared.applicationState == .background else { return }
+        startKeepAliveAudio()
+        for recorder in activeRecorders.values { recorder.resumeAudioIfNeeded() }
+    }
+
+    /// When the next scheduled recording starts, for the background refresh to
+    /// be asked for around then.
+    var nextScheduledStart: Date? {
+        recordings.filter { $0.status == .scheduled && $0.endTime > Date() }.map(\.startTime).min()
+    }
+
+    private func updateClock() {
+        guard needsBackgroundRuntime else {
+            clock?.invalidate()
+            clock = nil
+            return
+        }
+        guard clock == nil else { return }
+        let timer = Timer(timeInterval: 5, repeats: true) { _ in
+            MainActor.assumeIsolated { RecordingManager.shared.tick() }
+        }
+        timer.tolerance = 1
+        RunLoop.main.add(timer, forMode: .common)
+        clock = timer
+    }
+
+    private func tick() {
+        checkSchedules()
+        holdBackground()
+
+        let now = Date()
+        for rec in recordings where rec.status == .scheduled
+            && rec.startTime.timeIntervalSince(now) <= RecordingAlerts.headsUpLead + 45 {
+            // Still here, and about to start it: no need to ask for the app.
+            RecordingAlerts.clearHeadsUp(rec.id)
+        }
+
+        guard now.timeIntervalSince(lastHeartbeat) >= 30 else { return }
+        lastHeartbeat = now
+        for (id, recorder) in activeRecorders {
+            Task {
+                if await recorder.outOfSpace() {
+                    guard activeRecorders[id] === recorder else { return }
+                    if let rec = recordings.first(where: { $0.id == id }) { RecordingAlerts.storageFull(rec) }
+                    stopRecording(id)
+                } else if await recorder.received(within: 45), activeRecorders[id] === recorder,
+                          let rec = recordings.first(where: { $0.id == id }) {
+                    RecordingAlerts.stillRecording(rec)
+                }
+            }
+        }
     }
 
     // MARK: - Background keep-alive
@@ -99,24 +175,29 @@ class RecordingManager: NSObject, ObservableObject {
         }
     }
 
-    /// Starts anything overdue and fails anything fully missed. Runs on
-    /// launch (via restore) and on every foreground activation.
-    private func checkSchedules() {
+    /// Brings every recording in line with the clock: starts what is due,
+    /// ends what is over, picks up what the app died in the middle of, and
+    /// fails what was missed entirely.
+    func checkSchedules() {
         let now = Date()
-        for i in recordings.indices {
-            let rec = recordings[i]
+        for rec in recordings {
             switch rec.status {
             case .recording:
-                // A recorder we still hold is healthy; one we don't means
-                // the process died mid-recording — salvage or restart.
-                if activeRecorders[rec.id] == nil {
-                    if rec.endTime > now { startRecording(rec) }
-                    else { finalizeStaleRecording(index: i) }
+                if activeRecorders[rec.id] != nil {
+                    if rec.endTime <= now { stopRecording(rec.id) }
+                } else if rec.endTime > now {
+                    // The process died mid-recording: add to what it got.
+                    startRecording(rec)
+                } else if let i = recordings.firstIndex(where: { $0.id == rec.id }) {
+                    finalizeStaleRecording(index: i)
                 }
             case .scheduled:
                 if rec.endTime <= now {
-                    recordings[i].status = .failed
-                    saveRecordings()
+                    if let i = recordings.firstIndex(where: { $0.id == rec.id }) {
+                        recordings[i].status = .failed
+                        saveRecordings()
+                    }
+                    RecordingAlerts.clear(rec.id)
                 } else if rec.startTime <= now {
                     startRecording(rec)
                 }
@@ -124,44 +205,12 @@ class RecordingManager: NSObject, ObservableObject {
                 break
             }
         }
+        updateClock()
     }
-    
-    private func restoreActiveRecordings() {
-        let now = Date()
-        for i in recordings.indices {
-            let rec = recordings[i]
-            if rec.status == .recording {
-                if rec.endTime > now {
-                    print("🔄 [RecordingManager] Restoring interrupted recording: \(rec.channelName)")
-                    startRecording(rec)
-                } else {
-                    print("⚠️ [RecordingManager] Found stale recording: \(rec.channelName)")
-                    finalizeStaleRecording(index: i)
-                }
-            } else if rec.status == .scheduled {
-                if rec.endTime <= now {
-                    // Entire window passed while the app was not running — nothing to record.
-                    print("⚠️ [RecordingManager] Missed scheduled recording: \(rec.channelName)")
-                    recordings[i].status = .failed
-                    saveRecordings()
-                } else if rec.startTime <= now {
-                    // Inside the recording window — start immediately.
-                    print("🔄 [RecordingManager] Starting overdue scheduled recording: \(rec.channelName)")
-                    startRecording(rec)
-                } else {
-                    // Still in the future — re-arm the DispatchQueue timer (lost on kill).
-                    let delay = rec.startTime.timeIntervalSince(now)
-                    let capturedRec = rec
-                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                        self?.startRecording(capturedRec)
-                    }
-                }
-            }
-        }
-    }
-    
+
     private func finalizeStaleRecording(index: Int) {
         let rec = recordings[index]
+        RecordingAlerts.clear(rec.id)
         let filename = "\(rec.id.uuidString).ts"
         let url = getDocumentsDirectory().appendingPathComponent(filename)
         let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
@@ -170,6 +219,7 @@ class RecordingManager: NSObject, ObservableObject {
             recordings[index].status = .completed
             recordings[index].localFileName = filename
             saveRecordings()
+            measure(filename: filename, recordingID: rec.id)
             // Remux any stale .ts left from a previous crash so it gets a
             // seek table and switches to KSPlayer on next playback.
             remuxToMP4(tsFilename: filename, recordingID: rec.id)
@@ -200,17 +250,11 @@ class RecordingManager: NSObject, ObservableObject {
         saveRecordings()
         
         
-        let now = Date()
-        if startTime <= now {
-            startRecording(recording)
-        } else {
-            let delay = startTime.timeIntervalSince(now)
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                self?.startRecording(recording)
-            }
-        }
+        RecordingAlerts.requestPermission()
+        if startTime > Date() { RecordingAlerts.schedule(for: recording) }
+        checkSchedules()
     }
-    
+
     private func startRecording(_ recording: Recording) {
         guard let index = recordings.firstIndex(where: { $0.id == recording.id }) else { return }
         
@@ -219,6 +263,7 @@ class RecordingManager: NSObject, ObservableObject {
         
         recordings[index].status = .recording
         saveRecordings()
+        RecordingAlerts.recordingStarted(recording)
         
         guard let url = URL(string: recording.streamURL) else {
             failRecording(recording, reason: "Invalid URL")
@@ -238,8 +283,15 @@ class RecordingManager: NSObject, ObservableObject {
 
         recorder.onCompletion = { [weak self] in
             DispatchQueue.main.async {
-                guard let self = self,
-                      let idx = self.recordings.firstIndex(where: { $0.id == recording.id }) else { return }
+                guard let self else { return }
+                self.activeRecorders.removeValue(forKey: recording.id)
+                RecordingAlerts.clear(recording.id)
+                defer {
+                    self.reassessKeepAlive()
+                    self.updateClock()
+                }
+                // Deleted while it was recording: nothing to keep.
+                guard let idx = self.recordings.firstIndex(where: { $0.id == recording.id }) else { return }
 
                 let fileURL = self.getDocumentsDirectory().appendingPathComponent(filename)
                 let size = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
@@ -258,7 +310,7 @@ class RecordingManager: NSObject, ObservableObject {
                     let scheduled = recording.endTime.timeIntervalSince(recording.startTime)
                     self.recordings[idx].recordedDuration = max(1, min(wall, scheduled))
                     self.saveRecordings()
-                    self.activeRecorders.removeValue(forKey: recording.id)
+                    self.measure(filename: filename, recordingID: recording.id)
 
                     // Remux to MP4 in the background.  KSPlayer/AVPlayer will then
                     // give perfectly accurate scrubbing via the moov seek table.
@@ -268,31 +320,26 @@ class RecordingManager: NSObject, ObservableObject {
                     self.recordings[idx].status = .failed
                     try? FileManager.default.removeItem(at: fileURL)
                     self.saveRecordings()
-                    self.activeRecorders.removeValue(forKey: recording.id)
                 }
-                self.reassessKeepAlive()
-            }
-        }
-
-        recorder.onError = { [weak self] error in
-            DispatchQueue.main.async {
-                print("Recording error: \(error)")
-                self?.failRecording(recording, reason: error.localizedDescription)
-                self?.activeRecorders.removeValue(forKey: recording.id)
-                self?.reassessKeepAlive()
             }
         }
 
         activeRecorders[recording.id] = recorder
         recorder.start()
 
-        let timeUntilEnd = recording.endTime.timeIntervalSince(Date())
-        if timeUntilEnd > 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + timeUntilEnd) { [weak self] in
-                self?.stopRecording(recording.id)
-            }
-        } else {
-            stopRecording(recording.id)
+    }
+
+    /// The length of what was actually recorded, read from the file. The time
+    /// between start and end overstates it for a recording that started late
+    /// or had a gap in the middle.
+    private func measure(filename: String, recordingID: UUID) {
+        let url = getDocumentsDirectory().appendingPathComponent(filename)
+        Task {
+            guard let length = await RecordingHLSServer.index(file: url)?.duration, length > 1,
+                  let idx = recordings.firstIndex(where: { $0.id == recordingID }),
+                  recordings[idx].localFileName == filename else { return }
+            recordings[idx].recordedDuration = length
+            saveRecordings()
         }
     }
     
@@ -322,15 +369,15 @@ class RecordingManager: NSObject, ObservableObject {
         if activeRecorders[recording.id] != nil {
             stopRecording(recording.id)
         }
-        
-        
-        if let path = recording.localFileName {
-            let fileURL = getDocumentsDirectory().appendingPathComponent(path)
-            try? FileManager.default.removeItem(at: fileURL)
-        }
-        
+        RecordingAlerts.clear(recording.id)
+
+        // One still recording has no name on it yet, only its file.
+        let path = recording.localFileName ?? "\(recording.id.uuidString).ts"
+        try? FileManager.default.removeItem(at: getDocumentsDirectory().appendingPathComponent(path))
+
         recordings.removeAll { $0.id == recording.id }
         saveRecordings()
+        updateClock()
     }
     
     private func failRecording(_ recording: Recording, reason: String) {

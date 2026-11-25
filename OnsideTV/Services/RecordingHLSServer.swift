@@ -26,6 +26,9 @@ nonisolated final class RecordingHLSServer: @unchecked Sendable {
         /// stand on its own, and the file only repeats them now and then.
         let tables: Data
         let segments: [Segment]
+        /// AVPlayer plays the sound of HEVC in a transport stream and shows no
+        /// picture, so this can be measured but not floated.
+        let hevc: Bool
         var duration: Double { segments.reduce(0) { $0 + $1.duration } }
 
         var playlist: String {
@@ -64,9 +67,6 @@ nonisolated final class RecordingHLSServer: @unchecked Sendable {
             guard let tables = findTables(base, count) else { return nil }
             let videoPID = tables.videoPID
             let hevc = tables.hevc
-            // AVPlayer plays the sound of HEVC in a transport stream and shows
-            // no picture, so there is nothing to float.
-            guard !hevc else { return nil }
 
             func next(from: Int, to end: Int) -> Keyframe? {
                 nextKeyframe(base, count, from: from, to: end, pid: videoPID, hevc: hevc)
@@ -144,7 +144,7 @@ nonisolated final class RecordingHLSServer: @unchecked Sendable {
                 startsAfterJump = true
             }
             guard !segments.isEmpty else { return nil }
-            return Index(file: file, tables: tables.packets, segments: segments)
+            return Index(file: file, tables: tables.packets, segments: segments, hevc: hevc)
         }
     }
 

@@ -70,6 +70,9 @@ class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDele
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        // Up from the first moment, background launches included: a recording
+        // that is due starts now, not when some screen first asks for it.
+        _ = RecordingManager.shared
         return true
     }
 
@@ -125,7 +128,9 @@ struct OnsideTVApp: App {
         // Re-arm at every launch too, not just on backgrounding — a reboot,
         // app update, or force-quit wipes pending BGTask submissions, and
         // an app that's opened then killed would otherwise never refresh.
-        BackgroundManager.shared.scheduleAppRefresh()
+        // Next turn of the run loop: it asks about recordings, and picking one up
+        // needs the application object, which doesn't exist yet in here.
+        DispatchQueue.main.async { BackgroundManager.shared.scheduleAppRefresh() }
     }
     
     var body: some Scene {
@@ -210,7 +215,10 @@ class BackgroundManager {
 
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: quickRefreshTaskID)
         let quick = BGAppRefreshTaskRequest(identifier: quickRefreshTaskID)
-        quick.earliestBeginDate = nextRunDate()
+        // Around the next recording's start, if that comes first: iOS decides,
+        // but it may hand a closed app the time to begin it.
+        quick.earliestBeginDate = RecordingManager.shared.nextScheduledStart
+            .map { min($0, nextRunDate()) } ?? nextRunDate()
         do {
             try BGTaskScheduler.shared.submit(quick)
         } catch {
@@ -222,6 +230,8 @@ class BackgroundManager {
         scheduleAppRefresh()
 
         let work = Task {
+            // Any time in the background is a chance to start one that is due.
+            RecordingManager.shared.checkSchedules()
             let result = await ChannelViewModel.shared.backgroundFetch()
             task.setTaskCompleted(success: result != .noData)
         }
