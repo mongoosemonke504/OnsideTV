@@ -598,6 +598,20 @@ struct MultiViewHubLayout: View {
         activeIndices.filter { $0 != focusedIndex }
     }
 
+    /// Set when more streams are up than their line allows: the provider
+    /// cuts one off to let another in, and no buffer fixes that.
+    private var connectionNotice: String? {
+        let channels = Array(Dictionary(
+            viewModel.multiViewSlots.compactMap { $0 }.map { ($0.streamURL, $0) },
+            uniquingKeysWith: { first, _ in first }
+        ).values)
+        for line in Dictionary(grouping: channels, by: \.accountID).values {
+            guard let limit = viewModel.connectionLimit(for: line[0]), limit > 0, line.count > limit else { continue }
+            return "Your provider allows \(limit) stream\(limit == 1 ? "" : "s") at once, so some of these may keep stopping."
+        }
+        return nil
+    }
+
     /// Channels to surface in the "Add to Multi-View" strip. Recent → favorites
     /// → all, filtering out any channel already on screen.
     private var suggestedChannels: [StreamChannel] {
@@ -637,6 +651,16 @@ struct MultiViewHubLayout: View {
             .padding(.bottom, isLandscapeImmersive ? 0 : 14)
             .frame(height: isLandscapeImmersive ? 0 : nil)
             .clipped()
+
+            if !isLandscapeImmersive, let notice = connectionNotice {
+                Text(notice)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.yellow.opacity(0.9))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 10)
+            }
 
             equalStreams
                 // Landscape: clear the notch with a 4 pt floor for the
@@ -1866,14 +1890,12 @@ struct SmartGridPlayer: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {
-        // Re-mount in case SwiftUI rebuilt the container (different cell,
-        // different layout, etc.). The pool detects a same-URL entry and
-        // re-parents the existing player rather than restarting it.
         MultiViewPlayerPool.shared.mount(
             url: url,
             in: uiView,
             isMuted: isMuted,
-            isPlaying: isPlaying
+            isPlaying: isPlaying,
+            isUpdate: true
         )
     }
 
@@ -1901,123 +1923,286 @@ final class MultiViewPlayerPool {
     static let shared = MultiViewPlayerPool()
     private init() {}
 
-    /// Per-URL playback state. Reference type so the watchdog timer can capture
-    /// it weakly.
+    /// Per-URL playback state.
     fileprivate final class Entry {
         let url: URL
-        var vlcPlayer: VLCMediaPlayer?
+        var player: VLCMediaPlayer?
+        /// What VLC draws into, for as long as the stream lives. The tile's
+        /// container only hosts it: VLC keeps drawing into the view it started
+        /// with, so moving a stream to another tile has to move that view.
+        let renderView: UIView = {
+            let view = UIView()
+            view.backgroundColor = .clear
+            view.isUserInteractionEnabled = false
+            view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            return view
+        }()
+        weak var container: UIView?
         var wantsPlaying = true
-        /// Latest desired mute state, re-applied by the watchdog once VLC's
-        /// audio output exists (a mute set before the aout is created is
-        /// silently dropped).
-        var wantsMuted: Bool = true
-        var watchdog: Timer?
+        var wantsMuted = true
+
+        // What VLC last put out, and when that last changed.
+        var pictures: Int32 = 0
+        var audio: Int32 = 0
+        var bytes: Int32 = 0
+        var lastOutput = Date()
+        var lastPicture = Date()
+        var healthySince: Date?
+        /// Reconnects since the stream last ran properly: each waits longer.
+        var retries = 0
+        /// A start or reconnect is waiting its turn.
+        var startPending = false
 
         init(url: URL) { self.url = url }
     }
 
     private var entries: [String: Entry] = [:]
+    private var timer: Timer?
+    private var tickCount = 0
+    private var lastTick = Date()
+    /// When the next stream may open. Four opening at once fight over the
+    /// connection while every one of them is trying to fill its buffer.
+    private var nextStart = Date.distantPast
 
-    /// Configures the audio session once per app launch.
-    private var didConfigureGlobals = false
+    private static let startSpacing: TimeInterval = 0.8
+    /// Nothing at all out of VLC for this long is a dead connection.
+    private static let deadAfter: TimeInterval = 12
+    /// Data still arriving but no new picture for this long is a dead decoder.
+    private static let frozenAfter: TimeInterval = 20
 
-    /// Creates the player for `url` if needed, then re-parents it to
+    /// Creates the player for `url` if needed and puts its picture in
     /// `container`. Safe to call repeatedly with the same URL.
-    func mount(url: URL, in container: UIView, isMuted: Bool, isPlaying: Bool) {
-        configureGlobalsIfNeeded()
-
+    func mount(url: URL, in container: UIView, isMuted: Bool, isPlaying: Bool, isUpdate: Bool = false) {
         let key = url.absoluteString
         let entry: Entry
         if let existing = entries[key] {
             entry = existing
         } else {
+            if entries.isEmpty { beginSession() }
             entry = Entry(url: url)
             entries[key] = entry
-            startVLCPlayer(for: entry)
-            startWatchdog(for: entry)
+            scheduleStart(entry)
         }
 
-        entry.wantsPlaying = isPlaying
+        // A new tile takes the picture over. A re-render of an old one only
+        // claims it if nothing on screen has it, so a tile on its way out
+        // can't take it back from the one that replaced it.
+        if entry.container !== container, !isUpdate || entry.container?.window == nil {
+            entry.container = container
+            entry.renderView.frame = container.bounds
+            container.addSubview(entry.renderView)
+        }
+
         entry.wantsMuted = isMuted
-        attachPlayerView(of: entry, to: container)
-        applyMuteAndPlay(entry: entry, isMuted: isMuted, isPlaying: isPlaying)
+        applyVolume(entry)
+        if entry.wantsPlaying != isPlaying {
+            entry.wantsPlaying = isPlaying
+            if isPlaying { entry.player?.play() } else { entry.player?.pause() }
+        }
     }
 
     /// Releases every entry whose URL isn't in `activeURLs`.
     func reconcile(activeURLs: Set<String>) {
         for key in Array(entries.keys) where !activeURLs.contains(key) {
-            if let entry = entries.removeValue(forKey: key) {
-                cleanup(entry)
-            }
+            if let entry = entries.removeValue(forKey: key) { cleanup(entry) }
         }
+        if entries.isEmpty { endSession() }
     }
 
     /// Tears down every cached player. Called on `MultiViewScreen.onDisappear`.
     func releaseAll() {
+        guard !entries.isEmpty else { return }
         let all = Array(entries.values)
         entries.removeAll()
         for entry in all { cleanup(entry) }
+        endSession()
     }
 
-    // MARK: Private helpers
+    // MARK: Session
 
-    private func configureGlobalsIfNeeded() {
-        guard !didConfigureGlobals else { return }
-        didConfigureGlobals = true
-
+    private func beginSession() {
         // `.mixWithOthers` lets all 4 streams hold players simultaneously
-        // without auto-pausing each other.
+        // without auto-pausing each other. Set each time: the main player
+        // puts its own category back in between.
         try? AVAudioSession.sharedInstance().setCategory(
             .playback,
             mode: .moviePlayback,
             options: [.allowAirPlay, .allowBluetoothA2DP, .mixWithOthers]
         )
         try? AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
-    }
-
-    private func startVLCPlayer(for entry: Entry) {
-        let player = VLCMediaPlayer()
-        let media = VLCMedia(url: entry.url)
-        media.addOptions([
-            "network-caching": 1500,
-            "clock-jitter": 0,
-            "clock-synchro": 0,
-            "avcodec-hw": "any",
-            "videotoolbox": 1
-        ])
-        player.media = media
-        player.play()
-        entry.vlcPlayer = player
-    }
-
-    private func startWatchdog(for entry: Entry) {
-        entry.watchdog?.invalidate()
-        // With 4 simultaneous streams competing for bandwidth, individual
-        // streams pause more often, so re-kick them. Also re-affirm the mute
-        // state every tick — the first applyMute can no-op before the audio
-        // output exists, which would otherwise leave every card audible.
-        entry.watchdog = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak entry] _ in
-            guard let entry = entry, entry.wantsPlaying, let vp = entry.vlcPlayer else { return }
-            if let audio = vp.audio { audio.volume = entry.wantsMuted ? 0 : 100 }
-            if !vp.isPlaying { vp.play() }
+        // Let the main player's connection close before the first tile opens.
+        nextStart = Date().addingTimeInterval(0.4)
+        lastTick = Date()
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { _ in
+            MainActor.assumeIsolated { MultiViewPlayerPool.shared.tick() }
         }
     }
 
-    private func attachPlayerView(of entry: Entry, to container: UIView) {
-        entry.vlcPlayer?.drawable = container
+    private func endSession() {
+        timer?.invalidate()
+        timer = nil
+        UIApplication.shared.isIdleTimerDisabled = false
     }
 
-    private func applyMuteAndPlay(entry: Entry, isMuted: Bool, isPlaying: Bool) {
-        guard let player = entry.vlcPlayer else { return }
-        if let audio = player.audio { audio.volume = isMuted ? 0 : 100 }
-        if isPlaying, !player.isPlaying { player.play() }
-        else if !isPlaying, player.isPlaying { player.pause() }
+    // MARK: Starting
+
+    private func scheduleStart(_ entry: Entry, after delay: TimeInterval = 0) {
+        guard !entry.startPending else { return }
+        entry.startPending = true
+        let at = max(Date().addingTimeInterval(delay), nextStart)
+        // Only a first start or a quick retry holds a place in the queue; one
+        // waiting out a long backoff mustn't hold up the others.
+        if delay < 3 { nextStart = at.addingTimeInterval(Self.startSpacing) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, at.timeIntervalSinceNow)) { [weak self, weak entry] in
+            guard let self, let entry else { return }
+            entry.startPending = false
+            // Removed from multi-view while it waited.
+            guard self.entries[entry.url.absoluteString] === entry, entry.player == nil else { return }
+            self.start(entry)
+        }
     }
+
+    private func start(_ entry: Entry) {
+        // The main player's buffer length, the user's own if they set one.
+        var bufferMs = 10000
+        let isAuto = (UserDefaults.standard.object(forKey: "autoBuffer") as? Bool) ?? true
+        if !isAuto {
+            let seconds = UserDefaults.standard.double(forKey: "bufferTime")
+            if seconds > 0 { bufferMs = Int(seconds * 1000) }
+        }
+
+        let media = VLCMedia(url: entry.url)
+        media.addOptions([
+            "network-caching": bufferMs,
+            "http-reconnect": 1,
+            "clock-jitter": 500,
+            "clock-synchro": 0,
+            // Behind for a moment, drop frames and catch up rather than let
+            // one busy tile fall further and further back.
+            "drop-late-frames": 1,
+            "skip-frames": 1,
+            // Deinterlacing copies every frame off the GPU and back, four
+            // times over, for lines too fine to see at tile size.
+            "deinterlace": 0,
+            // Only for codecs the hardware can't decode.
+            "avcodec-fast": 1,
+            "avcodec-skiploopfilter": 1
+        ])
+
+        let player = VLCMediaPlayer()
+        player.drawable = entry.renderView
+        player.media = media
+        entry.player = player
+        entry.pictures = 0
+        entry.audio = 0
+        entry.bytes = 0
+        // Room for the connection to open and the buffer to fill before the
+        // clock on a dead stream starts.
+        let grace = Date().addingTimeInterval(Double(bufferMs) / 1000)
+        entry.lastOutput = grace
+        entry.lastPicture = grace
+        entry.healthySince = nil
+        if entry.wantsPlaying { player.play() }
+    }
+
+    /// Drops a dead stream's connection and opens a fresh one, waiting longer
+    /// each time it fails so a channel that is down isn't hammered.
+    private func reconnect(_ entry: Entry) {
+        guard !entry.startPending else { return }
+        stop(entry)
+        let delay = min(1.5 * pow(2, Double(entry.retries)), 30)
+        entry.retries += 1
+        scheduleStart(entry, after: delay)
+    }
+
+    // MARK: Watching
+
+    private func tick() {
+        let now = Date()
+        // Back from being suspended: nothing was decoding, so nothing is late.
+        if now.timeIntervalSince(lastTick) > 3 || UIApplication.shared.applicationState != .active {
+            for entry in entries.values {
+                entry.lastOutput = max(entry.lastOutput, now)
+                entry.lastPicture = max(entry.lastPicture, now)
+            }
+        }
+        lastTick = now
+
+        // The audio output appears some time after play, and a volume set
+        // before it exists is dropped, so a muted tile would be heard.
+        for entry in entries.values { applyVolume(entry) }
+
+        tickCount += 1
+        guard tickCount % 4 == 0 else { return }
+        // Each VLC player clears this when it stops, the other tiles' needs
+        // or not.
+        if !UIApplication.shared.isIdleTimerDisabled { UIApplication.shared.isIdleTimerDisabled = true }
+        for entry in entries.values { check(entry, now: now) }
+    }
+
+    private func check(_ entry: Entry, now: Date) {
+        guard entry.wantsPlaying, let player = entry.player else { return }
+
+        if let stats = player.media?.statistics {
+            let newPicture = stats.displayedPictures != entry.pictures
+            if newPicture || stats.decodedAudio != entry.audio || stats.readBytes != entry.bytes {
+                entry.lastOutput = max(entry.lastOutput, now)
+            }
+            if newPicture { entry.lastPicture = max(entry.lastPicture, now) }
+            entry.pictures = stats.displayedPictures
+            entry.audio = stats.decodedAudio
+            entry.bytes = stats.readBytes
+        }
+
+        switch player.state {
+        case .ended, .error, .stopped:
+            // `.stopped` is also what a player reads before it gets going.
+            if player.state == .stopped, now < entry.lastOutput { break }
+            reconnect(entry)
+            return
+        case .paused:
+            // Paused by the system (a call, another app's audio).
+            player.play()
+        default:
+            break
+        }
+
+        let dead = now.timeIntervalSince(entry.lastOutput) > Self.deadAfter
+        let frozen = entry.pictures > 0 && now.timeIntervalSince(entry.lastPicture) > Self.frozenAfter
+        if dead || frozen {
+            reconnect(entry)
+            return
+        }
+
+        // Half a minute of steady picture and past failures are forgotten.
+        if now.timeIntervalSince(entry.lastPicture) < 3, entry.pictures > 0 {
+            if let since = entry.healthySince {
+                if entry.retries > 0, now.timeIntervalSince(since) > 30 { entry.retries = 0 }
+            } else {
+                entry.healthySince = now
+            }
+        } else {
+            entry.healthySince = nil
+        }
+    }
+
+    private func applyVolume(_ entry: Entry) {
+        guard let audio = entry.player?.audio else { return }
+        let wanted: Int32 = entry.wantsMuted ? 0 : 100
+        if audio.volume != wanted { audio.volume = wanted }
+    }
+
+    // MARK: Stopping
 
     private func cleanup(_ entry: Entry) {
-        entry.watchdog?.invalidate()
-        entry.watchdog = nil
-        guard let player = entry.vlcPlayer else { return }
+        stop(entry)
+        entry.renderView.removeFromSuperview()
+    }
+
+    private func stop(_ entry: Entry) {
+        guard let player = entry.player else { return }
+        entry.player = nil
         // SILENCE FIRST. `stop()` is asynchronous inside VLC, so a player that
         // gets released while the stop is still in flight can carry on decoding
         // — and the only thing you'd notice is the audio. Dropping the volume
@@ -2026,7 +2211,6 @@ final class MultiViewPlayerPool {
         if player.isPlaying { player.pause() }
         player.stop()
         player.drawable = nil
-        entry.vlcPlayer = nil
         // Hold the player alive past the stop so ARC can't free it mid-teardown,
         // then stop once more and let it go.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
