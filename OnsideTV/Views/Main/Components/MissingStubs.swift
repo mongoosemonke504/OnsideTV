@@ -81,10 +81,6 @@ struct SearchView: View {
     }
 
     @State private var scope: Scope = .all
-    /// Pages kept built for the length of a chip jump across several scopes,
-    /// so the pager slides through real pages instead of blank ones.
-    @State private var transitMount: ClosedRange<Int>? = nil
-    @State private var transitToken = 0
 
     /// Live scroll depth of the ACTIVE page, driving the header slide. A LEAF,
     /// so a scroll frame moves the header and re-renders nothing else. Same
@@ -229,25 +225,7 @@ struct SearchView: View {
     /// `TabView` selection. Silent: no chip row in the app buzzes.
     private func setScope(_ target: Scope) {
         guard target != scope else { return }
-        let all = Scope.allCases
-        guard let from = all.firstIndex(of: scope), let to = all.firstIndex(of: target) else {
-            withAnimation(.easeInOut(duration: 0.25)) { scope = target }
-            return
-        }
-        // Every tap, even to the next chip: build the pages on the way (and
-        // keep the one being left) FIRST, then slide on the next frame. Doing
-        // both in one frame meant pages were mounting while the pager started
-        // its scroll, and when one of them took a moment to build the pager
-        // gave up and snapped straight to the new scope instead of sliding.
-        transitToken += 1
-        let token = transitToken
-        transitMount = min(from, to)...max(from, to)
-        DispatchQueue.main.async {
-            withAnimation(.easeInOut(duration: PagerJump.duration(steps: abs(to - from)))) { scope = target }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                if transitToken == token { transitMount = nil }
-            }
-        }
+        withAnimation(.easeInOut(duration: 0.25)) { scope = target }
     }
 
     private var nameMatches: [StreamChannel] { viewModel.filteredNameChannels }
@@ -275,24 +253,16 @@ struct SearchView: View {
     /// towards. `TabView(.page)` is UIPageViewController underneath — genuine
     /// interactive paging, both pages tracking the finger, each keeping its
     /// own scroll position.
-    /// Whether this scope's list should actually be BUILT. The pager keeps
-    /// every page alive, and a full result list is not cheap; only the current
-    /// scope and the two you can reach from it — all an interactive swipe can
-    /// reveal — get real content. Same rule as the hubs.
-    private func isMounted(_ s: Scope) -> Bool {
-        let all = Scope.allCases
-        guard let here = all.firstIndex(of: scope),
-              let there = all.firstIndex(of: s) else { return s == scope }
-        if let path = transitMount, path.contains(there) { return true }
-        return abs(here - there) <= 1
-    }
-
+    ///
+    /// All six are always built, as Favorites' pages are: a tap then only has
+    /// to slide, and never builds a page on the way. The rows inside are lazy,
+    /// so a page nobody is looking at costs a screenful at most.
     private func scopePage(for s: Scope) -> some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
                 if pushPending || viewModel.isSearching {
                     searchingSkeleton
-                } else if isMounted(s) {
+                } else {
                     resultsList(for: s)
                 }
             }
@@ -740,7 +710,7 @@ struct SearchView: View {
             // the team you meant without burying the channels. The Teams chip
             // is where the full list lives.
             let shown = scope == .teams ? favoritableHits : Array(favoritableHits.prefix(5))
-            VStack(alignment: .leading, spacing: 4) {
+            LazyVStack(alignment: .leading, spacing: 4) {
                 Text("Teams & Leagues")
                     .font(.title3.weight(.bold))
                     .foregroundStyle(.white)
@@ -757,6 +727,7 @@ struct SearchView: View {
 
     @ViewBuilder
     private func resultsList(for scope: Scope) -> some View {
+        let topID = topResult?.channel.id
         VStack(alignment: .leading, spacing: 22) {
             // A channel isn't a result in any of these scopes.
             if scope != .recordings, scope != .categories, scope != .teams, let top = topResult {
@@ -772,14 +743,14 @@ struct SearchView: View {
             if scope == .all && favoritableLeads { favoritableSection(for: scope) }
 
             if scope == .all || scope == .channels {
-                let rows = nameMatches.filter { $0.id != topResult?.channel.id }
+                let rows = nameMatches.filter { $0.id != topID }
                 if !rows.isEmpty {
                     section(title: "Channels", channels: rows)
                 }
             }
 
             if scope == .all || scope == .epg {
-                let rows = epgMatches.filter { $0.id != topResult?.channel.id }
+                let rows = epgMatches.filter { $0.id != topID }
                 if !rows.isEmpty {
                     section(title: "On Now", channels: rows)
                 }
@@ -936,7 +907,7 @@ struct SearchView: View {
     }
 
     private func section(title: String, channels: [StreamChannel]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        LazyVStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.title3.weight(.bold))
                 .foregroundStyle(.white)

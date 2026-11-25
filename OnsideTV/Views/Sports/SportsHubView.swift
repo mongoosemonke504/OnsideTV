@@ -242,26 +242,29 @@ struct SportsHubView: View {
     private func selectTab(_ newTab: SportsTab) {
         guard newTab != sportsTab else { return }
         let tabs = orderedTabs
-        guard let from = tabs.firstIndex(of: sportsTab), let to = tabs.firstIndex(of: newTab),
-              abs(to - from) > 1 else {
+        guard let from = tabs.firstIndex(of: sportsTab), let to = tabs.firstIndex(of: newTab) else {
             withAnimation(.easeInOut(duration: 0.25)) { sportsTab = newTab }
             return
         }
-        // A jump of more than one chip. The pager scrolls across every tab in
-        // between, and those were blank (only a tab's neighbours are built),
-        // with the page being left blanking out the moment the selection
-        // changed. Build the whole path, crests included, then slide on the
-        // next frame, so the move travels through real pages.
-        let path = min(from, to)...max(from, to)
+        // The same slide as Favorites. Favorites has four pages and keeps them
+        // all built, so its slide never has to build anything; there are too
+        // many sports for that. So build everything this slide touches first
+        // (the pages it crosses, plus the neighbours of both ends), and only
+        // move once that has reached the screen. Changing the selection then
+        // builds and tears down nothing, and the pager just slides.
+        let path = max(0, min(from, to) - 1)...min(tabs.count - 1, max(from, to) + 1)
         for index in path {
             if case .sport(let sport) = tabs[index] { scoreViewModel.prefetchLogos(for: sport) }
         }
         transitToken += 1
         let token = transitToken
-        transitMount = path
-        DispatchQueue.main.async {
-            withAnimation(.easeInOut(duration: PagerJump.duration(steps: abs(to - from)))) { sportsTab = newTab }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+        var build = Transaction()
+        build.disablesAnimations = true
+        withTransaction(build) { transitMount = path }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
+            guard transitToken == token else { return }
+            withAnimation(.easeInOut(duration: 0.25)) { sportsTab = newTab }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 if transitToken == token { transitMount = nil }
             }
         }
@@ -573,7 +576,7 @@ struct SportsHubView: View {
             // slide that just landed here is still finishing.
             warmAdjacentTabs()
             guard case .sport(let s) = tab else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 guard sportsTab == tab else { return }
                 if s != scoreViewModel.selectedSport {
                     scoreViewModel.selectedSport = s
@@ -707,7 +710,12 @@ struct SportsHubView: View {
                 set: { isAll in if isAll { selectTab(.all) } }
             )
         ) {
-            Task { await scoreViewModel.fetchScores() }
+            // After the slide: scores landing in the middle of it re-render
+            // the pages that are moving.
+            Task {
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                await scoreViewModel.fetchScores()
+            }
         }
         .padding(.vertical, 2)
         // Home-style dark gradient. As part of the pinned header it renders
