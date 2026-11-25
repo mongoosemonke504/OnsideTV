@@ -776,7 +776,7 @@ struct PlayerInfoPanel: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 ChannelViewModel.shared.triggerSelectionHaptic()
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { showFullDescription.toggle() }
+                withoutAnimation { showFullDescription.toggle() }
             }
     }
 

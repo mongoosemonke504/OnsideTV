@@ -141,9 +141,7 @@ struct RecordingSetupSheet: View {
                         Button {
                             ChannelViewModel.shared.triggerSelectionHaptic()
                             // Snaps, highlight and content alike.
-                            var t = Transaction()
-                            t.disablesAnimations = true
-                            withTransaction(t) { mode = m }
+                            withoutAnimation { mode = m }
                         } label: {
                             Text(m.rawValue)
                                 .font(.system(size: 14, weight: .semibold))

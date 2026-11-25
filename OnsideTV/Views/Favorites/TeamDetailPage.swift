@@ -1191,7 +1191,7 @@ struct TeamDetailPage: View {
             Button(action: {
                 guard SwipeTapGuard.tapsAllowed else { return }
                 viewModel.triggerSelectionHaptic()
-                withAnimation(.easeInOut(duration: 0.22)) { aboutExpanded.toggle() }
+                withoutAnimation { aboutExpanded.toggle() }
             }) {
                 Text(aboutExpanded ? "Show less" : "Read more")
                     .font(.system(size: 13, weight: .bold))
