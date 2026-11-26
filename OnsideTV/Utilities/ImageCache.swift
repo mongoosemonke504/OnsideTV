@@ -114,7 +114,10 @@ final class ImageCache: @unchecked Sendable {
     /// image work, and concurrent requests for the same URL are coalesced.
     func image(forKey urlString: String, size: CGSize? = nil) async -> UIImage? {
         if let cached = cache.object(forKey: Self.cacheKey(urlString, size)) { return cached }
-        if let existing = inFlight[urlString] { return await existing.value }
+        // By url AND size: a request for another size used to be handed this
+        // one's image, decoded at the wrong size.
+        let flightKey = Self.cacheKey(urlString, size) as String
+        if let existing = inFlight[flightKey] { return await existing.value }
 
         let task = Task<UIImage?, Never> { [weak self] in
             // Disk decode, off the main thread.
@@ -128,7 +131,8 @@ final class ImageCache: @unchecked Sendable {
 
             // Network fetch (transfer is already off-main), then decode + persist off-main.
             guard let url = URL(string: urlString),
-                  let (data, _) = try? await URLSession.shared.data(from: url) else { return nil }
+                  let (data, response) = try? await URLSession.shared.data(from: url),
+                  Self.isSuccess(response) else { return nil }
             let decoded = await Task.detached(priority: .userInitiated) {
                 // Trimmed on this path too, so a logo looks the same the first
                 // time it arrives as it does after a relaunch (when it comes
@@ -153,9 +157,9 @@ final class ImageCache: @unchecked Sendable {
             return image
         }
 
-        inFlight[urlString] = task
+        inFlight[flightKey] = task
         let result = await task.value
-        inFlight[urlString] = nil
+        inFlight[flightKey] = nil
         return result
     }
 
@@ -181,13 +185,16 @@ final class ImageCache: @unchecked Sendable {
         }
 
         guard let url = URL(string: urlString),
-              let (data, _) = try? await URLSession.shared.data(from: url) else { return }
+              let (data, response) = try? await URLSession.shared.data(from: url),
+              isSuccess(response) else { return }
 
-        try? data.write(to: fileURL(for: urlString))
         let decoded = await Task.detached(priority: .background) {
             DecodedImage(image: UIImage(data: data))
         }.value.image
+        // Only an image is kept. An error page saved here counted as cached
+        // from then on, so the real logo was never fetched again.
         if let image = decoded {
+            try? data.write(to: fileURL(for: urlString))
             await shared.set(image, forKey: urlString, size: size, skipDiskWrite: true)
         }
     }
@@ -197,6 +204,11 @@ final class ImageCache: @unchecked Sendable {
     }
 
     // MARK: - Nonisolated helpers (safe to call off the main actor)
+
+    nonisolated private static func isSuccess(_ response: URLResponse) -> Bool {
+        guard let http = response as? HTTPURLResponse else { return true }
+        return (200..<300).contains(http.statusCode)
+    }
 
     nonisolated static func diskCacheDirectory() -> URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]

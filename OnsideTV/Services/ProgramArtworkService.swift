@@ -411,12 +411,22 @@ actor ProgramArtworkService {
         cache = stored.filter { $0.value.checked > cutoff }
     }
 
+    /// One save a moment after the last change. A save per answer, each on
+    /// its own task, could land out of order and put back an older file.
+    private var saveTask: Task<Void, Never>?
+
     private func persist() {
-        let snapshot = cache
-        Task.detached(priority: .background) {
-            guard let data = try? JSONEncoder().encode(snapshot) else { return }
-            try? data.write(to: Self.cacheURL, options: .atomic)
+        saveTask?.cancel()
+        saveTask = Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
+            writeCache()
         }
+    }
+
+    private func writeCache() {
+        guard let data = try? JSONEncoder().encode(cache) else { return }
+        try? data.write(to: Self.cacheURL, options: .atomic)
     }
 
     // MARK: Wire models
