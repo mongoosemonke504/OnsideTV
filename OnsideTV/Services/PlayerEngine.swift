@@ -1218,20 +1218,51 @@ public class PlayerEngine: NSObject, ObservableObject {
         }
 
         // A one-connection line refuses the second reader until VLC lets go.
-        // Give it the chance to allow both, so the picture needn't stop early.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
-            guard let self, attempt == self.pipAttempt, self.startPiPWhenReady, !self.isPiPSessionActive,
-                  self.pipRelay?.hasData != true else { return }
-            self.suspendVLCForPiP()
+        // A line already known to do that hands over at once; any other gets
+        // the chance to allow both, so the picture needn't stop early.
+        let line = Self.lineKey(url)
+        let oneConnection = Self.oneConnectionLines.contains(line)
+        var handedOver = false
+        if oneConnection {
+            handedOver = true
+            suspendVLCForPiP()
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                guard let self, attempt == self.pipAttempt, self.startPiPWhenReady, !self.isPiPSessionActive,
+                      self.pipRelay?.hasData != true else { return }
+                handedOver = true
+                self.suspendVLCForPiP()
+            }
         }
-        let relay = LiveStreamRelay(source: url)
+        // Answers on the first few seconds; the rest of what it fetches
+        // arrives while the window opens.
+        let relay = LiveStreamRelay(source: url, startWith: 4)
         pipRelay = relay
         let address = await relay.start(quiet: 14)
         guard attempt == pipAttempt else { return relay.stop() }
+        if address != nil, handedOver, !oneConnection {
+            // It only got the stream once VLC let go: next time, don't wait.
+            Self.noteOneConnection(line)
+        }
         if address == nil { pipRelay = nil }
         // Not something the relay carries: AVPlayer can read it itself.
         pipIsLastResort = address == nil && !relay.isUnsupported
         armPiP(url: address ?? url)
+    }
+
+    /// Lines (host and port) that let only one reader in at a time, so PiP
+    /// on them hands over from VLC straight away. No login is kept.
+    private static let oneConnectionKey = "pipOneConnectionLines"
+    private static var oneConnectionLines: Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: oneConnectionKey) ?? [])
+    }
+    private static func noteOneConnection(_ line: String) {
+        var lines = oneConnectionLines
+        guard lines.insert(line).inserted else { return }
+        UserDefaults.standard.set(Array(lines.prefix(50)), forKey: oneConnectionKey)
+    }
+    private static func lineKey(_ url: URL) -> String {
+        "\(url.host?.lowercased() ?? ""):\(url.port ?? (url.scheme == "https" ? 443 : 80))"
     }
 
     private func armPiP(url: URL) {
