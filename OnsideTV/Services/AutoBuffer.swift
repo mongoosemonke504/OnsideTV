@@ -2,13 +2,12 @@ import Foundation
 
 /// The player's buffer when Auto Buffer is on.
 ///
-/// Auto used to be a fixed ten seconds, the same as the slider at its top.
-/// Now a channel opens on a short buffer, so it starts quickly, and one that
-/// stalls is given more the next time it opens. A channel that then plays
-/// smoothly for a while gets some of it back.
+/// Every channel opens on ten seconds, as Auto always did. One that stalls
+/// is given more the next time it opens, up to twenty, and one that then
+/// plays smoothly for a while gets some of it back.
 nonisolated enum AutoBuffer {
-    static let shortest = 4000
-    static let longest = 16000
+    static let shortest = 10000
+    static let longest = 20000
     private static let stallStep = 3000
     private static let smoothStep = 1000
     private static let key = "autoBufferByChannel"

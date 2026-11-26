@@ -379,11 +379,9 @@ public class PlayerEngine: NSObject, ObservableObject {
         // remuxed .mp4 alike). For local files, probe the duration via AVURLAsset
         // since VLC often reports -1 for a concatenated .ts until it has scanned
         // to the end.
-        if relaysThrough(url) {
-            startThroughRelay(url)
-        } else {
-            playVLC(url: url)
-        }
+        // Played straight from the provider: going through the on-phone relay
+        // first made channels slow to start and less steady.
+        playVLC(url: url)
         if url.isFileURL {
             probeAndSetDuration(from: url)
         }
