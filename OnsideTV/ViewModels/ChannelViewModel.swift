@@ -2806,12 +2806,27 @@ class ChannelViewModel: ObservableObject {
         
         await MainActor.run {
             self.epgFetchInFlight = false
-            self.lastEPGUpdateTime = Date()
             self.epgProgress = 1.0
             self.visualProgress = 1.0
             self.epgState.progress = 1.0   // ensure banner shows 100%
-            self.epgData = result.epg
-            self.epgNameMap = result.map
+            var epg = result.epg
+            var map = result.map
+            if result.failed > 0 {
+                // A guide that didn't come keeps the programmes it had: an
+                // outage used to replace a full guide with an empty one and
+                // then wait twelve hours before trying again.
+                for (id, programs) in self.epgData where epg[id] == nil { epg[id] = programs }
+                for (name, id) in self.epgNameMap where map[name] == nil { map[name] = id }
+                // Again in an hour, not in twelve.
+                self.lastEPGUpdateTime = Date().addingTimeInterval(3600 - Self.epgMaxAge)
+            } else {
+                self.lastEPGUpdateTime = Date()
+            }
+            if !epg.isEmpty {
+                self.epgData = epg
+                self.epgNameMap = map
+                Task.detached(priority: .background) { await EPGService().saveToDisk(epg: epg, map: map) }
+            }
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 withAnimation(.spring()) { self.isUpdatingEPG = false }
@@ -3123,6 +3138,10 @@ class ChannelViewModel: ObservableObject {
         if urlString.contains("/live/") {
             let durationMinutes = Int(program.stop.timeIntervalSince(program.start) / 60)
             let formatter = DateFormatter()
+            // Fixed, whatever the phone's calendar and 12/24-hour setting:
+            // the server reads this.
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.calendar = Calendar(identifier: .gregorian)
             formatter.dateFormat = "yyyy-MM-dd:HH-mm"
             formatter.timeZone = TimeZone(secondsFromGMT: 0)
             let startString = formatter.string(from: targetDate)

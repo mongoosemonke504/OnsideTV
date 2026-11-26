@@ -503,6 +503,10 @@ class RecordingManager: NSObject, ObservableObject {
         if urlString.contains("/live/") {
             let durationMinutes = Int(recording.duration / 60)
             let formatter = DateFormatter()
+            // Fixed, whatever the phone's calendar and 12/24-hour setting:
+            // the server reads this.
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.calendar = Calendar(identifier: .gregorian)
             formatter.dateFormat = "yyyy-MM-dd:HH-mm"
             formatter.timeZone = TimeZone(secondsFromGMT: 0)
             let startString = formatter.string(from: recording.startTime)

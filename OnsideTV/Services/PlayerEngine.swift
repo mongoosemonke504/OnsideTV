@@ -119,6 +119,10 @@ public class PlayerEngine: NSObject, ObservableObject {
         if let range = urlString.range(of: "\\d{4}-\\d{2}-\\d{2}:\\d{2}-\\d{2}", options: .regularExpression) {
             let dateString = String(urlString[range])
             let formatter = DateFormatter()
+            // Fixed, whatever the phone's calendar and 12/24-hour setting:
+            // the server reads this.
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.calendar = Calendar(identifier: .gregorian)
             formatter.dateFormat = "yyyy-MM-dd:HH-mm"
             formatter.timeZone = TimeZone(secondsFromGMT: 0)
             return formatter.date(from: dateString)
