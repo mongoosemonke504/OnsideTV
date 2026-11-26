@@ -1,6 +1,6 @@
 import Foundation
 
-struct EPGProgram: Identifiable, Codable, Sendable {
+nonisolated struct EPGProgram: Identifiable, Codable, Sendable {
     var id = UUID()
     let channelID: String
     let title: String
@@ -13,7 +13,7 @@ struct EPGProgram: Identifiable, Codable, Sendable {
     var image: String? = nil
 }
 
-struct StreamChannel: Identifiable, Codable, Hashable, Equatable, Sendable {
+nonisolated struct StreamChannel: Identifiable, Codable, Hashable, Equatable, Sendable {
     var id: Int; 
     var name: String {
         didSet {
@@ -105,7 +105,7 @@ struct StreamChannel: Identifiable, Codable, Hashable, Equatable, Sendable {
     }
 }
 
-struct StreamCategory: Identifiable, Codable, Hashable, Equatable, Sendable {
+nonisolated struct StreamCategory: Identifiable, Codable, Hashable, Equatable, Sendable {
     let id: Int; var name: String; var isHidden: Bool; var order: Int
     enum CodingKeys: String, CodingKey { case id = "category_id", name = "category_name" }
     
@@ -126,4 +126,4 @@ struct StreamCategory: Identifiable, Codable, Hashable, Equatable, Sendable {
     }
 }
 
-struct SportConfig: Identifiable, Codable, Hashable, Sendable { var id: String; var name: String; var keywords: [String]; var order: Int }
+nonisolated struct SportConfig: Identifiable, Codable, Hashable, Sendable { var id: String; var name: String; var keywords: [String]; var order: Int }

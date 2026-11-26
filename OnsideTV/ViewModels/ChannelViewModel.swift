@@ -468,6 +468,10 @@ class ChannelViewModel: ObservableObject {
         let loadID = UUID()
         self.currentLoadID = loadID
         
+        // What is on screen now (or, at a cold start, saved), for any account
+        // that can't be reached this time to keep.
+        let previous: (channels: [StreamChannel], categories: [StreamCategory]) =
+            !channels.isEmpty ? (channels, categories) : (loadFromCache() ?? ([], []))
         currentLoadTask = Task {
             let startTime = Date()
             var hadCachedChannels = false
@@ -554,26 +558,45 @@ class ChannelViewModel: ObservableObject {
             }
             
             await MainActor.run {
-                self.activeAccountsMap = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
+                self.activeAccountsMap = Dictionary(firstWins: accounts.map { ($0.id, $0) })
             }
             
             var allChannels: [StreamChannel] = []
             var allCategories: [StreamCategory] = []
             var epgUrls: [URL] = []
+            var unreachable: Set<UUID> = []
+            var guideWaits = false
             
-            await withTaskGroup(of: ([StreamChannel], [StreamCategory], [URL]).self) { group in
+            await withTaskGroup(of: AccountLoad.self) { group in
                 for account in accounts {
                     group.addTask {
-                        if Task.isCancelled { return ([], [], []) }
+                        if Task.isCancelled { return AccountLoad(account: account.id, ok: false) }
                         return await self.fetchAccountData(account)
                     }
                 }
                 
-                for await (chans, cats, urls) in group {
-                    allChannels.append(contentsOf: chans)
-                    allCategories.append(contentsOf: cats)
-                    epgUrls.append(contentsOf: urls)
+                for await load in group {
+                    if load.ok {
+                        allChannels.append(contentsOf: load.channels)
+                        allCategories.append(contentsOf: load.categories)
+                        epgUrls.append(contentsOf: load.guides)
+                    } else {
+                        unreachable.insert(load.account)
+                    }
                 }
+            }
+
+            // A provider that is down, or a connection that dropped, says
+            // nothing about the channels: keep what that account had rather
+            // than emptying the home screen and the saved copy with it.
+            if !unreachable.isEmpty {
+                let kept = previous.channels.filter { $0.accountID.map(unreachable.contains) ?? false }
+                let keptCategoryIDs = Set(kept.map(\.categoryID))
+                allChannels.append(contentsOf: kept)
+                allCategories.append(contentsOf: previous.categories.filter { keptCategoryIDs.contains($0.id) })
+                // Its guide address is unknown this time; the guide waits for a
+                // load with every account in.
+                guideWaits = true
             }
             
             if Task.isCancelled {
@@ -588,11 +611,13 @@ class ChannelViewModel: ObservableObject {
                 self.channels = allChannels
                 self.categories = allCategories.sorted { $0.order < $1.order }
                 self.categorizeSports()
-                self.saveToCache()
-                self.lastPlaylistLoadTime = Date()
+                if !allChannels.isEmpty { self.saveToCache() }
+                // Try again soon, not in half an hour, when something was missing.
+                if unreachable.isEmpty { self.lastPlaylistLoadTime = Date() }
             }
             
             let silentEpg = silent || (hadCachedChannels && !force && !shouldUpdateEPG)
+            let shouldUpdateEPG = shouldUpdateEPG && !guideWaits
             
             
             if shouldUpdateEPG && allChannels.isEmpty {
@@ -763,17 +788,28 @@ class ChannelViewModel: ObservableObject {
         return nil
     }
 
-    func fetchAccountData(_ account: Account) async -> ([StreamChannel], [StreamCategory], [URL]) {
+    /// One account's part of a load. `ok` is false when the provider couldn't
+    /// be reached or answered with nothing, which is not the same as having no
+    /// channels: the account keeps what it had.
+    nonisolated struct AccountLoad: Sendable {
+        let account: UUID
+        var ok: Bool
+        var channels: [StreamChannel] = []
+        var categories: [StreamCategory] = []
+        var guides: [URL] = []
+    }
+
+    func fetchAccountData(_ account: Account) async -> AccountLoad {
         let offset = account.stableID * 100_000_000
         let prefix = "acc_\(account.stableID)_" 
-        
-        var fetchedChannels: [StreamChannel] = []
-        var fetchedCategories: [StreamCategory] = []
-        var fetchedEPGs: [URL] = []
+        var load = AccountLoad(account: account.id, ok: false)
+        // Added by hand in Settings, for any kind of playlist. They used to be
+        // left out of every refresh but the one made on that settings page.
+        let extraGuides = account.externalEPGUrls.compactMap { URL(string: $0.trimmingCharacters(in: .whitespaces)) }
         
         do {
             if account.type == .xtream {
-                guard let baseURL = URL(string: account.url) else { return ([], [], []) }
+                guard let baseURL = URL(string: account.url) else { return load }
                 let user = account.username ?? ""
                 let pass = account.password ?? ""
 
@@ -785,73 +821,107 @@ class ChannelViewModel: ObservableObject {
                     }
                 }
                 
-                
                 let catUrl = try await ChannelViewModel.buildApiUrl(base: baseURL, user: user, pass: pass, action: "get_live_categories")
-                let (cData, _) = try await URLSession.shared.data(from: catUrl)
-                let cats = try JSONDecoder().decode([StreamCategory].self, from: cData)
-                let processedCats = await ChannelViewModel.processCategories(cats, prefix: prefix, idOffset: offset)
-                fetchedCategories = processedCats
-                
-                
                 let streamUrl = try await ChannelViewModel.buildApiUrl(base: baseURL, user: user, pass: pass, action: "get_live_streams")
+                let (cData, _) = try await URLSession.shared.data(from: catUrl)
                 let (sData, _) = try await URLSession.shared.data(from: streamUrl)
-                let raw = try JSONDecoder().decode([StreamChannel].self, from: sData)
-                let processedChans = await ChannelViewModel.processChannels(raw, safeURL: account.url, user: user, pass: pass, prefix: prefix, idOffset: offset, accountID: account.id)
-                fetchedChannels = processedChans
-                
+                // Off the main thread: a big line is tens of thousands of
+                // channels, and decoding them there froze the screen.
+                let accountID = account.id
+                let safeURL = account.url
+                let (channels, categories) = try await Task.detached(priority: .userInitiated) {
+                    let cats = try JSONDecoder().decode([Lossy<StreamCategory>].self, from: cData).compactMap(\.value)
+                    let raw = try JSONDecoder().decode([Lossy<StreamChannel>].self, from: sData).compactMap(\.value)
+                    let processedCats = await ChannelViewModel.processCategories(cats, prefix: prefix, idOffset: offset)
+                    let processedChans = await ChannelViewModel.processChannels(raw, safeURL: safeURL, user: user, pass: pass, prefix: prefix, idOffset: offset, accountID: accountID)
+                    return (processedChans, processedCats)
+                }.value
+                load.channels = channels
+                load.categories = categories
                 
                 let epgUrl = baseURL.appendingPathComponent("xmltv.php")
                 var c = URLComponents(url: epgUrl, resolvingAgainstBaseURL: false)
                 c?.queryItems = [URLQueryItem(name: "username", value: user), URLQueryItem(name: "password", value: pass)]
-                if let finalEPG = c?.url { fetchedEPGs.append(finalEPG) }
+                if let finalEPG = c?.url { load.guides.append(finalEPG) }
                 
             } else {
-                
-                guard let baseURL = URL(string: account.url) else { return ([], [], []) }
-                let (data, _) = try await URLSession.shared.data(from: baseURL)
-                if let content = String(data: data, encoding: .utf8) {
-                    let (pChannels, pCategories, epgUrl) = await ChannelViewModel.parseM3U(content: content, idOffset: offset, accountID: account.id)
+                guard let baseURL = URL(string: account.url) else { return load }
+                let (data, response) = try await URLSession.shared.data(from: baseURL)
+                // An error page is not a playlist with nothing in it.
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return load }
+                let accountID = account.id
+                let (channels, categories, guides) = await Task.detached(priority: .userInitiated) {
+                    // Plenty of playlists aren't UTF-8; Latin-1 reads any bytes.
+                    let content = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+                    let text = content.contains("#EXTINF") ? content : (String(data: data, encoding: .isoLatin1) ?? content)
+                    let (pChannels, pCategories, epgUrl) = await ChannelViewModel.parseM3U(content: text, idOffset: offset, accountID: accountID)
                     // parseM3U builds its channels directly, so unlike the
                     // Xtream path nothing here had ever applied the user's
                     // renames. Names typed on an M3U playlist reverted on the
                     // next load every time.
-                    fetchedChannels = ChannelViewModel.applyChannelRenames(pChannels)
-                    fetchedCategories = await ChannelViewModel.processCategories(pCategories, prefix: prefix, idOffset: offset)
-                    if let eURL = epgUrl, let u = URL(string: eURL) { fetchedEPGs.append(u) }
-                }
+                    let channels = ChannelViewModel.applyChannelRenames(pChannels)
+                    let categories = await ChannelViewModel.processCategories(pCategories, prefix: prefix, idOffset: offset)
+                    let guides = (epgUrl ?? "").split(separator: ",")
+                        .compactMap { URL(string: $0.trimmingCharacters(in: .whitespaces)) }
+                    return (channels, categories, guides)
+                }.value
+                load.channels = channels
+                load.categories = categories
+                load.guides = guides
             }
             
         } catch {
-            print("Error fetching account \(account.name): \(error)")
+            print("Error fetching account \(account.name): \(error.localizedDescription)")
+            return load
         }
-        
-        return (fetchedChannels, fetchedCategories, fetchedEPGs)
+        load.guides.append(contentsOf: extraGuides)
+        // A line that answers with no channels at all is almost always a hiccup
+        // at the provider (or a login it has just stopped taking).
+        load.ok = !load.channels.isEmpty
+        return load
     }
     
+    /// The channel list for a cold start, saved as files rather than in the
+    /// app's settings: tens of thousands of channels made the settings file
+    /// slow to load at every launch, and every channel address carries the
+    /// login. Kept out of device backups and locked until the phone's first
+    /// unlock.
+    nonisolated private static func cacheFile(_ name: String) -> URL? {
+        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        var folder = support.appendingPathComponent("ChannelCache", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: folder.path) {
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try? folder.setResourceValues(values)
+        }
+        return folder.appendingPathComponent(name)
+    }
+
     private func saveToCache() {
         let prefix = self.settingsPrefix
         let channelsToCache = self.channels
         let categoriesToCache = self.categories
         
         Task.detached(priority: .background) {
-            let channelsData = try? JSONEncoder().encode(channelsToCache)
-            let categoriesData = try? JSONEncoder().encode(categoriesToCache)
-            
-            if let data = channelsData {
-                UserDefaults.standard.set(data, forKey: prefix + "cached_channels_v2")
-            }
-            if let data = categoriesData {
-                UserDefaults.standard.set(data, forKey: prefix + "cached_categories_v2")
+            for (name, data) in [("channels", try? JSONEncoder().encode(channelsToCache)),
+                                 ("categories", try? JSONEncoder().encode(categoriesToCache))] {
+                guard let data, let file = ChannelViewModel.cacheFile(prefix + name + ".json") else { continue }
+                if (try? data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])) != nil {
+                    UserDefaults.standard.removeObject(forKey: prefix + "cached_\(name)_v2")
+                }
             }
         }
     }
     
     private func loadFromCache() -> ([StreamChannel], [StreamCategory])? {
         let prefix = self.settingsPrefix
-        guard let channelsData = UserDefaults.standard.data(forKey: prefix + "cached_channels_v2"),
-              let categoriesData = UserDefaults.standard.data(forKey: prefix + "cached_categories_v2") else {
-            return nil
+        func read(_ name: String) -> Data? {
+            if let file = Self.cacheFile(prefix + name + ".json"), let data = try? Data(contentsOf: file) { return data }
+            // Where the cache lived before.
+            return UserDefaults.standard.data(forKey: prefix + "cached_\(name)_v2")
         }
+        guard let channelsData = read("channels"), let categoriesData = read("categories") else { return nil }
         
         let channels = (try? JSONDecoder().decode([StreamChannel].self, from: channelsData)) ?? []
         let categories = (try? JSONDecoder().decode([StreamCategory].self, from: categoriesData)) ?? []
@@ -861,7 +931,35 @@ class ChannelViewModel: ObservableObject {
         // mutates the in-memory list, so a cache written before it still
         // holds the old name — and this is the list a cold launch shows
         // first, before any network refresh runs.
-        return (ChannelViewModel.applyChannelRenames(channels), categories)
+        // The saved copy holds names only, so the hidden flags and the order
+        // come from the category settings, as they do on a full load.
+        return (ChannelViewModel.applyChannelRenames(channels), Self.applySavedCategorySettings(categories))
+    }
+
+    /// Hidden flags and order, as Settings saved them.
+    nonisolated static func applySavedCategorySettings(_ categories: [StreamCategory]) -> [StreamCategory] {
+        guard let saved = savedCategorySettings(prefix: "") else { return categories }
+        return categories.enumerated().map { i, category in
+            var c = category
+            if let s = saved[c.id] {
+                c.isHidden = s.isHidden
+                c.order = s.order
+            } else {
+                c.order = 9999 + i
+            }
+            return c
+        }.sorted { $0.order < $1.order }
+    }
+
+    nonisolated struct SavedCategory: Codable, Sendable { let id: Int; var name: String; var isHidden: Bool; var order: Int }
+
+    /// `saveCategorySettings` writes under the app-wide key; a per-account one
+    /// is read first in case one was ever written.
+    nonisolated static func savedCategorySettings(prefix: String) -> [Int: SavedCategory]? {
+        guard let data = UserDefaults.standard.data(forKey: prefix + "savedCategories")
+                ?? UserDefaults.standard.data(forKey: "savedCategories"),
+              let saved = try? JSONDecoder().decode([SavedCategory].self, from: data) else { return nil }
+        return Dictionary(firstWins: saved.map { ($0.id, $0) })
     }
     
     func reset() {
@@ -878,14 +976,23 @@ class ChannelViewModel: ObservableObject {
     }
 
     func backgroundFetch() async -> UIBackgroundFetchResult {
-        let url = UserDefaults.standard.string(forKey: "xstreamURL") ?? ""
-        let user = UserDefaults.standard.string(forKey: "username") ?? ""
-        let pass = UserDefaults.standard.string(forKey: "password") ?? ""
-        
-        guard !url.isEmpty, let baseURL = URL(string: url) else { return .noData }
-        
-        
-        await updateEPG(baseURL: baseURL, user: user, pass: pass, force: true, silent: true)
+        // The guides of every account in use. This read the old single-login
+        // settings, which nothing has written since accounts arrived, so the
+        // background refresh never fetched anything.
+        var urls = lastFetchedEPGUrls
+        if urls.isEmpty {
+            for account in AccountManager.shared.accounts where account.isActive {
+                if account.type == .xtream, let base = URL(string: account.url) {
+                    var c = URLComponents(url: base.appendingPathComponent("xmltv.php"), resolvingAgainstBaseURL: false)
+                    c?.queryItems = [URLQueryItem(name: "username", value: account.username ?? ""),
+                                     URLQueryItem(name: "password", value: account.password ?? "")]
+                    if let url = c?.url { urls.append(url) }
+                }
+                urls.append(contentsOf: account.externalEPGUrls.compactMap { URL(string: $0) })
+            }
+        }
+        guard !urls.isEmpty else { return .noData }
+        await updateEPGFromURLs(urls, silent: true)
         return .newData
     }
 
@@ -976,8 +1083,8 @@ class ChannelViewModel: ObservableObject {
 
         let picked = await Task.detached(priority: .userInitiated) { () -> (channels: [StreamChannel], popular: [StreamChannel], groups: [ChannelViewModel.SpotlightGroup]) in
             // Fast lookups
-            let catLookup = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
-            let chanByID  = Dictionary(uniqueKeysWithValues: channels.map { ($0.id, $0) })
+            let catLookup = Dictionary(firstWins: categories.map { ($0.id, $0) })
+            let chanByID  = Dictionary(firstWins: channels.map { ($0.id, $0) })
             let visible   = channels.filter { !hiddenIDs.contains($0.id) }
 
             // Inline EPG check — operates entirely on snapshotted value-types.
@@ -1243,7 +1350,7 @@ class ChannelViewModel: ObservableObject {
             // carousel. Live games still lead it — that's decided on the home
             // screen, not here — and the themed rows are unaffected.
             if !pinnedHero.isEmpty {
-                let byID = Dictionary(uniqueKeysWithValues: visible.map { ($0.id, $0) })
+                let byID = Dictionary(firstWins: visible.map { ($0.id, $0) })
                 let chosen = pinnedHero.compactMap { byID[$0] }
                 if !chosen.isEmpty { return (chosen, popular, groups) }
             }
@@ -2290,7 +2397,7 @@ class ChannelViewModel: ObservableObject {
             
             
             let sortedByScore = finalSelection
-            let scores = Dictionary(uniqueKeysWithValues: scoredChannels.map { ($0.channel.id, $0.score) })
+            let scores = Dictionary(firstWins: scoredChannels.map { ($0.channel.id, $0.score) })
             
             let finalSorted = sortedByScore.sorted { a, b in
                 let idxA = orderMap[a.id]
@@ -2560,6 +2667,8 @@ class ChannelViewModel: ObservableObject {
         }
         
         
+        // Nothing to make an account from.
+        guard !url.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         let tempAccount = Account(name: "Main", type: type, url: url, username: user, password: pass, isActive: true, stableID: 0)
         
         
@@ -2854,8 +2963,10 @@ class ChannelViewModel: ObservableObject {
         for i in 0..<lines.count {
             let line = lines[i].trimmingCharacters(in: .whitespaces)
             if line.hasPrefix("#EXTM3U") {
-                if let urlRange = line.range(of: "url-tvg=\"(.*?)\"", options: .regularExpression) {
-                    epgUrl = line[urlRange].replacingOccurrences(of: "url-tvg=\"", with: "").replacingOccurrences(of: "\"", with: "")
+                // Both spellings are in use, and either can list several guides.
+                if let urlRange = line.range(of: "(x-tvg-url|url-tvg)=\"[^\"]*\"", options: .regularExpression) {
+                    let attribute = line[urlRange]
+                    epgUrl = attribute.drop(while: { $0 != "\"" }).dropFirst().dropLast().trimmingCharacters(in: .whitespaces)
                 }
             } else if line.hasPrefix("#EXTINF") {
                 var name = "Unknown Channel"; var logo: String? = nil; var group = "Uncategorized"; var eID: String? = nil
@@ -2863,7 +2974,10 @@ class ChannelViewModel: ObservableObject {
                 if let gr = line.range(of: "group-title=\"(.*?)\"", options: .regularExpression) { group = String(line[gr]).replacingOccurrences(of: "group-title=\"", with: "").replacingOccurrences(of: "\"", with: "") }
                 if let lo = line.range(of: "tvg-logo=\"(.*?)\"", options: .regularExpression) { logo = String(line[lo]).replacingOccurrences(of: "tvg-logo=\"", with: "").replacingOccurrences(of: "\"", with: "") }
                 if let tid = line.range(of: "tvg-id=\"(.*?)\"", options: .regularExpression) { eID = String(line[tid]).replacingOccurrences(of: "tvg-id=\"", with: "").replacingOccurrences(of: "\"", with: "") }
-                let catID = abs(group.hashValue)
+                // Stable from one launch to the next. `hashValue` is not: it
+                // changes on every launch, so an M3U group's hidden flag,
+                // colour and position were lost each time.
+                let catID = ChannelViewModel.stableID(for: group)
                 if !catNames.contains(group) { categories.append(StreamCategory(id: catID, name: group)); catNames.insert(group) }
                 
                 
@@ -2876,6 +2990,20 @@ class ChannelViewModel: ObservableObject {
         return (channels, categories, epgUrl)
     }
     
+    /// 48 bits of FNV-1a: the same for the same text on every launch, and far
+    /// above any id a provider hands out, so the two never meet.
+    nonisolated static func stableID(for text: String) -> Int {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in text.utf8 { hash = (hash ^ UInt64(byte)) &* 0x100_0000_01b3 }
+        return Int(hash & 0x0000_FFFF_FFFF_FFFF) | (1 << 48)
+    }
+
+    /// A username or password as one segment of a stream address. Ordinary
+    /// ones come back unchanged; a `/`, `?` or `#` in one broke every address.
+    nonisolated static func pathSegment(_ text: String) -> String {
+        text.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#;%"))) ?? text
+    }
+
     nonisolated static private func buildApiUrl(base: URL, user: String, pass: String, action: String) async throws -> URL {
         var c = URLComponents(url: base.appendingPathComponent("player_api.php"), resolvingAgainstBaseURL: false)
         c?.queryItems = [URLQueryItem(name: "username", value: user), URLQueryItem(name: "password", value: pass), URLQueryItem(name: "action", value: action)]
@@ -2893,18 +3021,10 @@ class ChannelViewModel: ObservableObject {
         let renames = (try? JSONDecoder().decode([Int: String].self, from: data)) ?? [:]
         
         
-        struct Wrapper: Codable { let id: Int; var name: String; var isHidden: Bool; var order: Int }
-        // The key had a stray "anda" on it while saveCategorySettings writes
-        // plain "savedCategories" — so the saved order, hidden flags and names
-        // were written every time and read back never. That is why reordering
-        // categories in Settings appeared to do nothing: the list fell through
-        // to the bottom path below, which re-derives order from raw playlist
-        // position on every load.
-        if let savedData = UserDefaults.standard.data(forKey: prefix + "savedCategories"),
-           let saved = try? JSONDecoder().decode([Wrapper].self, from: savedData) {
-            
-            
-            let savedMap = Dictionary(uniqueKeysWithValues: saved.map { ($0.id, $0) })
+        // Read from the key `saveCategorySettings` writes. Only a per-account
+        // key was read here, which nothing writes, so hidden categories came
+        // back and the order reset on every reload.
+        if let savedMap = savedCategorySettings(prefix: prefix) {
             
             for i in 0..<mutable.count {
                 let originalID = mutable[i].id
@@ -2918,8 +3038,8 @@ class ChannelViewModel: ObservableObject {
                     c.isHidden = s.isHidden
                     c.order = s.order
                     
+                    // The provider's current name unless the user renamed it.
                     if let custom = renames[originalID + idOffset] { c.name = custom }
-                    else { c.name = s.name } 
                     mutable[i] = c
                 } else {
                     if let custom = renames[originalID + idOffset] { mutable[i].name = custom }
@@ -2980,6 +3100,7 @@ class ChannelViewModel: ObservableObject {
 
     nonisolated static func processChannels(_ raw: [StreamChannel], safeURL: String, user: String, pass: String, prefix: String, idOffset: Int, accountID: UUID) async -> [StreamChannel] {
         let renames = loadChannelRenames()
+        let user = pathSegment(user), pass = pathSegment(pass)
         return raw.map { 
             var c = $0
             c.originalID = c.id

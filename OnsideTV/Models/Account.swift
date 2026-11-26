@@ -1,6 +1,6 @@
 import Foundation
 
-struct Account: Identifiable, Codable, Equatable, Hashable {
+nonisolated struct Account: Identifiable, Codable, Equatable, Hashable {
     var id: UUID = UUID()
     var name: String
     var type: LoginType

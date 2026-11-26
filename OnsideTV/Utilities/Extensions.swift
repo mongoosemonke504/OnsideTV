@@ -14,8 +14,23 @@ extension Color {
         return String(format: "#%02lX%02lX%02lX", lroundf(Float(c[0])*255), lroundf(Float(c[1])*255), lroundf(Float(c[2])*255))
     }
 }
+extension Dictionary {
+    /// Like `init(uniqueKeysWithValues:)`, but a repeated key keeps the first
+    /// value instead of crashing. Providers do send the same id twice.
+    nonisolated init<S: Sequence>(firstWins pairs: S) where S.Element == (Key, Value) {
+        self.init(pairs, uniquingKeysWith: { first, _ in first })
+    }
+}
+
+/// Decodes one element of a list, or nothing: one malformed channel in a
+/// provider's answer used to fail the whole list.
+nonisolated struct Lossy<T: Decodable & Sendable>: Decodable, Sendable {
+    let value: T?
+    init(from decoder: Decoder) throws { value = try? T(from: decoder) }
+}
+
 extension KeyedDecodingContainer {
-    func decodeFlexibleID(forKey key: K) throws -> Int {
+    nonisolated func decodeFlexibleID(forKey key: K) throws -> Int {
         if let intValue = try? decode(Int.self, forKey: key) { return intValue }
         if let stringValue = try? decode(String.self, forKey: key) {
             return Int(stringValue) ?? 0
