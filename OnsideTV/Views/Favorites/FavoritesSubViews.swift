@@ -399,7 +399,11 @@ struct FavoritesAllTeamsView: View {
                             scoreViewModel.moveFavoriteTeams(from: source, to: destination)
                         }
                         .onDelete { idx in
-                            for i in idx { scoreViewModel.toggleFavoriteTeam(teams[i].team, sport: teams[i].sport) }
+                            // Read first: the list shrinks with each removal.
+                            let list = teams
+                            for item in idx.filter({ list.indices.contains($0) }).map({ list[$0] }) {
+                                scoreViewModel.toggleFavoriteTeam(item.team, sport: item.sport)
+                            }
                         }
                     }
                 }
@@ -424,8 +428,8 @@ struct FavoritesAllTeamsView: View {
                             scoreViewModel.moveFavoriteLeagues(from: source, to: destination)
                         }
                         .onDelete { idx in
-                            for i in idx {
-                                let l = leagues[i]
+                            let list = leagues
+                            for l in idx.filter({ list.indices.contains($0) }).map({ list[$0] }) {
                                 scoreViewModel.toggleFavoriteLeague(sport: l.sport, leagueLabel: l.leagueLabel)
                             }
                         }

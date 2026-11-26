@@ -671,7 +671,11 @@ public class PlayerEngine: NSObject, ObservableObject {
                 let targetSec = self.externalTimeManagement
                     ? (time + self.externalTimeOffset)
                     : time
-                self.vlcMediaPlayer.time = VLCTime(int: Int32(targetSec * 1000))
+                // A NaN or out-of-range time here closed the app.
+                let ms = targetSec * 1000
+                if ms.isFinite {
+                    self.vlcMediaPlayer.time = VLCTime(int: Int32(clamping: Int64(max(0, min(ms, Double(Int32.max))))))
+                }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.isInteractionSeeking = false }
         }

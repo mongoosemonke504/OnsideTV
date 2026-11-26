@@ -519,7 +519,7 @@ struct UpdatesCard: View {
                                         .font(.body)
                                         .foregroundColor(.secondary)
                                     
-                                    Button(action: { UIApplication.shared.open(URL(string: release.htmlUrl)!) }) {
+                                    Button(action: { if let url = URL(string: release.htmlUrl) { UIApplication.shared.open(url) } }) {
                                         Text("Download Update")
                                             .font(.headline)
                                             .foregroundStyle(.primary)

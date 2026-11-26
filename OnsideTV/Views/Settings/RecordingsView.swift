@@ -931,7 +931,11 @@ struct ManageScheduledView: View {
                     }
                 }
                 .onDelete { indexSet in
-                    for idx in indexSet { manager.deleteRecording(liveScheduled[idx]) }
+                    // Read them all first: the list shrinks with each delete,
+                    // so a second index could point past its end.
+                    let list = liveScheduled
+                    let doomed = indexSet.filter { list.indices.contains($0) }.map { list[$0] }
+                    for rec in doomed { manager.deleteRecording(rec) }
                 }
             }
             .navigationTitle("Scheduled")
