@@ -724,7 +724,8 @@ class ChannelViewModel: ObservableObject {
     /// one thing a recording carries that is unambiguous — then by name, the
     /// way the recording player's info panel has always found it.
     func liveChannel(for recording: Recording) -> StreamChannel? {
-        if let exact = channels.first(where: { $0.streamURL == recording.streamURL }) { return exact }
+        if let address = RecordingManager.shared.playableURL(for: recording),
+           let exact = channels.first(where: { $0.streamURL == address }) { return exact }
         return channels.first {
             $0.name.caseInsensitiveCompare(recording.channelName) == .orderedSame
         } ?? channels.first {

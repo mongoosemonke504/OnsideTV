@@ -230,11 +230,12 @@ class RecordingManager: NSObject, ObservableObject {
     }
     
     func scheduleRecording(channel: StreamChannel, startTime: Date, endTime: Date, programTitle: String? = nil, programDescription: String? = nil, category: Recording.RecordingCategory = .other) {
-        let recording = Recording(
+        let account = AccountManager.shared.accounts.first { $0.id == channel.accountID }
+        var recording = Recording(
             id: UUID(),
             channelName: channel.name,
             channelIcon: channel.icon,
-            streamURL: channel.streamURL,
+            streamURL: RecordingLogin.mask(channel.streamURL, user: account?.username, pass: account?.password),
             hasArchive: channel.hasArchive,
             startTime: startTime,
             endTime: endTime,
@@ -245,6 +246,7 @@ class RecordingManager: NSObject, ObservableObject {
             localFileName: nil,
             category: category
         )
+        recording.accountID = account?.id
         
         recordings.append(recording)
         saveRecordings()
@@ -265,7 +267,7 @@ class RecordingManager: NSObject, ObservableObject {
         saveRecordings()
         RecordingAlerts.recordingStarted(recording)
         
-        guard let url = URL(string: recording.streamURL) else {
+        guard let address = playableURL(for: recording), let url = URL(string: address) else {
             failRecording(recording, reason: "Invalid URL")
             return
         }
@@ -399,9 +401,42 @@ class RecordingManager: NSObject, ObservableObject {
            let decoded = try? JSONDecoder().decode([Recording].self, from: data) {
             recordings = decoded
         }
+        if maskSavedLogins() { saveRecordings() }
+    }
+
+    /// The recording's stream address with its login filled back in.
+    func playableURL(for recording: Recording) -> String? {
+        guard RecordingLogin.isMasked(recording.streamURL) else { return recording.streamURL }
+        var account = AccountManager.shared.accounts.first { $0.id == recording.accountID }
+        if (account?.password ?? "").isEmpty {
+            // Before the phone's first unlock the Keychain can't be read yet.
+            AccountManager.shared.restorePasswords()
+            account = AccountManager.shared.accounts.first { $0.id == recording.accountID }
+        }
+        return RecordingLogin.fill(recording.streamURL, user: account?.username, pass: account?.password)
+    }
+
+    /// Recordings saved by older builds have the login in their address.
+    /// Swaps it for placeholders wherever the account can be found.
+    private func maskSavedLogins() -> Bool {
+        var changed = false
+        let accounts = AccountManager.shared.accounts
+        for i in recordings.indices where recordings[i].accountID == nil {
+            let address = recordings[i].streamURL
+            for account in accounts where !(account.password ?? "").isEmpty {
+                let masked = RecordingLogin.mask(address, user: account.username, pass: account.password)
+                guard masked != address, RecordingLogin.fill(masked, user: account.username, pass: account.password) != nil else { continue }
+                recordings[i].streamURL = masked
+                recordings[i].accountID = account.id
+                changed = true
+                break
+            }
+        }
+        return changed
     }
     
     private func saveRecordings() {
+        _ = maskSavedLogins()
         if let encoded = try? JSONEncoder().encode(recordings) {
             UserDefaults.standard.set(encoded, forKey: recordingsKey)
         }
@@ -496,7 +531,8 @@ class RecordingManager: NSObject, ObservableObject {
     }
     
     private func resolveFallbackURL(for recording: Recording) -> URL? {
-        guard recording.hasArchive, let original = URL(string: recording.streamURL) else { return nil }
+        guard recording.hasArchive, let address = playableURL(for: recording),
+              let original = URL(string: address) else { return nil }
         let urlString = original.absoluteString
         
         
