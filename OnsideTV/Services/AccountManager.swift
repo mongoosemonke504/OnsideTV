@@ -1,5 +1,49 @@
 import Foundation
 import Combine
+import Security
+import UIKit
+
+/// Playlist passwords, in the Keychain rather than the app's settings, where
+/// they were plain text in every device backup.
+enum PasswordVault {
+    private static let service = "tv.onside.app.playlist"
+
+    private static func query(_ id: UUID) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: service,
+         kSecAttrAccount as String: id.uuidString]
+    }
+
+    /// Nil when there is none, or when the phone hasn't been unlocked since
+    /// it started and the Keychain can't be read yet.
+    static func read(_ id: UUID) -> String? {
+        var q = query(id)
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var out: AnyObject?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
+              let data = out as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    @discardableResult
+    static func write(_ password: String, for id: UUID) -> Bool {
+        let data = Data(password.utf8)
+        let attributes: [String: Any] = [kSecValueData as String: data,
+                                         kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock]
+        var status = SecItemUpdate(query(id) as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            var add = query(id)
+            add.merge(attributes) { $1 }
+            status = SecItemAdd(add as CFDictionary, nil)
+        }
+        return status == errSecSuccess
+    }
+
+    static func delete(_ id: UUID) {
+        SecItemDelete(query(id) as CFDictionary)
+    }
+}
 
 class AccountManager: ObservableObject {
     static let shared = AccountManager()
@@ -22,14 +66,42 @@ class AccountManager: ObservableObject {
         }
     }
     
+    /// Accounts whose password this launch read back from the Keychain, so
+    /// the copy in the settings can go. A password is only ever dropped from
+    /// there after a launch has found it in the Keychain, never on the launch
+    /// that put it there: an app re-signed under another Apple ID can lose
+    /// its Keychain, and then the settings copy is what keeps it logged in.
+    private var passwordInVault: Set<UUID> = []
+
     init() {
         loadAccounts()
+        NotificationCenter.default.addObserver(forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+                                               object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { AccountManager.shared.restorePasswords() }
+        }
     }
     
     private func loadAccounts() {
         if let data = UserDefaults.standard.data(forKey: "savedAccounts"),
-           let decoded = try? JSONDecoder().decode([Account].self, from: data) {
+           var decoded = try? JSONDecoder().decode([Account].self, from: data) {
+            for i in decoded.indices {
+                let id = decoded[i].id
+                let stored = PasswordVault.read(id)
+                if let password = decoded[i].password, !password.isEmpty {
+                    if stored == password {
+                        passwordInVault.insert(id)
+                    } else {
+                        PasswordVault.write(password, for: id)
+                    }
+                } else if let stored {
+                    decoded[i].password = stored
+                    passwordInVault.insert(id)
+                }
+            }
             self.accounts = decoded
+            // The single-login settings from before accounts. Nothing reads
+            // them once an account exists, and one is a password.
+            if !decoded.isEmpty { UserDefaults.standard.removeObject(forKey: "password") }
         }
         
         if let activeIDStr = UserDefaults.standard.string(forKey: "activeAccountID"),
@@ -39,8 +111,34 @@ class AccountManager: ObservableObject {
         }
     }
     
+    /// Fills in passwords that couldn't be read at launch, because the phone
+    /// hadn't been unlocked yet.
+    func restorePasswords() {
+        for i in accounts.indices where (accounts[i].password ?? "").isEmpty {
+            if let stored = PasswordVault.read(accounts[i].id) {
+                passwordInVault.insert(accounts[i].id)
+                accounts[i].password = stored
+            }
+        }
+    }
+
     private func saveAccounts() {
-        if let encoded = try? JSONEncoder().encode(accounts) {
+        for account in accounts {
+            guard let password = account.password, !password.isEmpty else { continue }
+            if PasswordVault.read(account.id) != password {
+                // New or changed: kept in the settings too until a launch has
+                // read it back.
+                passwordInVault.remove(account.id)
+                PasswordVault.write(password, for: account.id)
+            }
+        }
+        let saved = accounts.map { account -> Account in
+            guard passwordInVault.contains(account.id) else { return account }
+            var copy = account
+            copy.password = nil
+            return copy
+        }
+        if let encoded = try? JSONEncoder().encode(saved) {
             UserDefaults.standard.set(encoded, forKey: "savedAccounts")
         }
     }
@@ -68,6 +166,8 @@ class AccountManager: ObservableObject {
     }
     
     func removeAccount(_ account: Account) {
+        PasswordVault.delete(account.id)
+        passwordInVault.remove(account.id)
         accounts.removeAll(where: { $0.id == account.id })
         if currentAccount?.id == account.id {
             currentAccount = accounts.first

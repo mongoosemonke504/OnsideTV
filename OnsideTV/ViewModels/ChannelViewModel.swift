@@ -533,6 +533,8 @@ class ChannelViewModel: ObservableObject {
                 }
             }
 
+            // A launch before the phone's first unlock can't read passwords yet.
+            AccountManager.shared.restorePasswords()
             let accounts = AccountManager.shared.accounts.filter { $0.isActive }
             if accounts.isEmpty {
                 await MainActor.run {
