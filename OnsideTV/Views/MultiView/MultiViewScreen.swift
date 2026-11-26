@@ -2065,7 +2065,9 @@ final class MultiViewPlayerPool {
 
     private func start(_ entry: Entry) {
         // The main player's buffer length, the user's own if they set one.
-        var bufferMs = 10000
+        // Four streams read straight from the provider at once: never less
+        // than the ten seconds this always had.
+        var bufferMs = max(10000, AutoBuffer.milliseconds(for: entry.url))
         let isAuto = (UserDefaults.standard.object(forKey: "autoBuffer") as? Bool) ?? true
         if !isAuto {
             let seconds = UserDefaults.standard.double(forKey: "bufferTime")

@@ -1,6 +1,7 @@
 import Foundation
 
-/// Feeds a live stream to Picture in Picture through the app itself.
+/// Feeds a live stream to the player and to Picture in Picture through the
+/// app itself.
 ///
 /// AVPlayer reading a provider directly sits close to live with little in
 /// hand, and any late or refused segment is a pause. Here the app downloads
@@ -46,10 +47,14 @@ nonisolated final class LiveStreamRelay: @unchecked Sendable {
     private static let longestReserve = 12.0
 
     /// Video in hand before the window is opened.
-    private static let enoughToStart = 8.0
+    static let enoughToStart = 8.0
+    /// How much to have before answering. The player opens on the first
+    /// segment, so a channel starts as quickly as it did reading the provider.
+    private let enoughToStart: Double
 
-    init(source: URL) {
+    init(source: URL, startWith: Double = LiveStreamRelay.enoughToStart) {
         self.source = source
+        enoughToStart = startWith
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("pip-\(UUID().uuidString)")
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 8
@@ -255,7 +260,7 @@ nonisolated final class LiveStreamRelay: @unchecked Sendable {
             segments.append(segment)
             lastArrival = Date()
             // Enough to start on; the rest of the list follows while it plays.
-            if segments.reduce(0, { $0 + $1.duration }) >= Self.enoughToStart { opened = true }
+            if segments.reduce(0, { $0 + $1.duration }) >= enoughToStart { opened = true }
             while segments.count > Self.keep, published > 8 {
                 try? FileManager.default.removeItem(at: segments.removeFirst().file)
                 published -= 1
@@ -284,7 +289,7 @@ nonisolated final class LiveStreamRelay: @unchecked Sendable {
         func held() -> Double { segments[published...].reduce(0) { $0 + $1.duration } }
         func given() -> Double { segments[..<published].reduce(0) { $0 + $1.duration } }
         let now = Date()
-        while published < segments.count, held() - segments[published].duration >= reserve || given() < Self.enoughToStart {
+        while published < segments.count, held() - segments[published].duration >= reserve || given() < enoughToStart {
             published += 1
             lastPublish = now
         }

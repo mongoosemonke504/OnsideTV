@@ -379,10 +379,88 @@ public class PlayerEngine: NSObject, ObservableObject {
         // remuxed .mp4 alike). For local files, probe the duration via AVURLAsset
         // since VLC often reports -1 for a concatenated .ts until it has scanned
         // to the end.
-        playVLC(url: url)
+        if relaysThrough(url) {
+            startThroughRelay(url)
+        } else {
+            playVLC(url: url)
+        }
         if url.isFileURL {
             probeAndSetDuration(from: url)
         }
+    }
+
+    // MARK: - Live relay
+
+    /// Live channels play from a copy the app keeps on the phone
+    /// (`LiveStreamRelay`), not straight from the provider. One connection
+    /// feeds both the player and the PiP window, so the window can open from
+    /// video already in hand, at once, instead of opening a second
+    /// connection, waiting for it, and then stopping the player. A network
+    /// change is covered by what is in hand too.
+    private var liveRelay: LiveStreamRelay?
+    private var liveRelaySource: URL?
+    private var liveRelayAddress: URL?
+    private var liveRelayToken = 0
+    /// Between asking the relay for a stream and VLC opening it.
+    private var liveRelayStarting = false
+    /// The PiP window is reading the player's relay, which it mustn't stop.
+    private var pipRelayShared = false
+    /// Streams the relay can't carry (not plain HLS), so they aren't tried
+    /// again on every open.
+    private var relayCantCarry = Set<String>()
+
+    private func relaysThrough(_ url: URL) -> Bool {
+        guard !url.isFileURL, let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              !url.absoluteString.contains("/timeshift/") else { return false }
+        return !relayCantCarry.contains(url.absoluteString)
+    }
+
+    private func startThroughRelay(_ source: URL) {
+        liveRelayToken += 1
+        let token = liveRelayToken
+        currentBackend = .vlc
+        liveRelayStarting = true
+        let relay = LiveStreamRelay(source: source, startWith: 1)
+        liveRelay = relay
+        liveRelaySource = source
+        Task { [weak self] in
+            // Long enough for a provider that is slow to answer, which reading it
+            // directly would be just as slow for.
+            let address = await relay.start(quiet: 15)
+            guard let self, token == self.liveRelayToken, self.currentURL == source else {
+                if self?.liveRelay !== relay { relay.stop() }
+                return
+            }
+            self.liveRelayStarting = false
+            if let address {
+                self.liveRelayAddress = address
+                self.playVLC(url: address)
+            } else {
+                // Not something it carries, or the provider gave it nothing:
+                // read the provider directly, as before.
+                if relay.isUnsupported { self.relayCantCarry.insert(source.absoluteString) }
+                self.liveRelay = nil
+                self.liveRelaySource = nil
+                self.playVLC(url: source)
+            }
+        }
+    }
+
+    /// Lets go of the player's relay, unless the PiP window is still showing it.
+    private func releaseLiveRelay() {
+        liveRelayToken += 1
+        liveRelayStarting = false
+        if let relay = liveRelay {
+            if pipRelay === relay {
+                // The window has it now, and stops it when it closes.
+                pipRelayShared = false
+            } else {
+                relay.stop()
+            }
+        }
+        liveRelay = nil
+        liveRelaySource = nil
+        liveRelayAddress = nil
     }
 
     public func pause() {
@@ -545,7 +623,8 @@ public class PlayerEngine: NSObject, ObservableObject {
     /// Something that should still be playing: live, not paused by the user,
     /// not handed to the PiP window.
     private var shouldBeLive: Bool {
-        guard currentBackend == .vlc, let url = currentURL, !userPaused, !vlcSuspendedForPiP else { return false }
+        guard currentBackend == .vlc, let url = currentURL, !userPaused, !vlcSuspendedForPiP,
+              !liveRelayStarting else { return false }
         return !url.isFileURL && !url.absoluteString.contains("/timeshift/")
     }
 
@@ -638,6 +717,7 @@ public class PlayerEngine: NSObject, ObservableObject {
         // player is the one thing playback teardown must not touch. With the
         // player UI gone there's also no VLC session left to resume later.
         vlcSuspendedForPiP = false
+        releaseLiveRelay()
         if !isPiPSessionActive { teardownPiPPlayer() }
         if currentBackend == .vlc { vlcMediaPlayer.stop(); vlcMediaPlayer.drawable = nil }
         currentBackend = .none
@@ -708,27 +788,8 @@ public class PlayerEngine: NSObject, ObservableObject {
             self.renderView.alpha = 1.0
             self.vlcMediaPlayer.drawable = self.renderView
             let media = VLCMedia(url: url)
-            
-            let autoBufferObj = UserDefaults.standard.object(forKey: "autoBuffer")
-            let isAuto = (autoBufferObj as? Bool) ?? true
-            
-            var bufferMs: Int = 10000
-            if !isAuto {
-                let userTime = UserDefaults.standard.double(forKey: "bufferTime")
-                if userTime > 0 { bufferMs = Int(userTime * 1000) }
-            }
-            
-            media.addOptions([
-                "network-caching": bufferMs,
-                // IPTV servers drop idle HTTP connections; VLC picks the
-                // stream back up itself instead of the app reloading it.
-                "http-reconnect": 1,
-                "clock-jitter": 500,
-                "clock-synchro": 0,
-                "drop-late-frames": 1,
-                "skip-frames": 1
-            ])
-            
+            media.addOptions(self.vlcOptions(for: url))
+
             self.vlcMediaPlayer.media = media
             if url.isFileURL {
                 // Recordings capture the raw stream mid-GOP: audio decodes from
@@ -755,6 +816,61 @@ public class PlayerEngine: NSObject, ObservableObject {
             // keeps the audio going and puts the stream in the Dynamic Island
             // as Now Playing; Picture in Picture is built on demand, the
             // moment the PiP button is tapped, and only then.
+        }
+    }
+
+    /// VLC's options for a stream. The buffer is the user's own when Auto
+    /// Buffer is off, and otherwise whatever this channel has shown it needs.
+    private func vlcOptions(for url: URL) -> [String: Any] {
+        var bufferMs = AutoBuffer.milliseconds(for: currentURL ?? url)
+        if (UserDefaults.standard.object(forKey: "autoBuffer") as? Bool) == false {
+            let userTime = UserDefaults.standard.double(forKey: "bufferTime")
+            bufferMs = userTime > 0 ? Int(userTime * 1000) : 10000
+        }
+        return [
+            "network-caching": bufferMs,
+            // IPTV servers drop idle HTTP connections; VLC picks the
+            // stream back up itself instead of the app reloading it.
+            "http-reconnect": 1,
+            "clock-jitter": 500,
+            "clock-synchro": 0,
+            "drop-late-frames": 1,
+            "skip-frames": 1
+        ]
+    }
+
+    // MARK: - Auto Buffer
+
+    private var lastPictureAt = Date()
+    private var smoothSince = Date()
+    private var inStall = false
+
+    private func notePicture(at now: Date, shown: Int32) {
+        if lastMediaStats.pictures == 0 || shown < lastMediaStats.pictures { smoothSince = now }
+        lastPictureAt = now
+        inStall = false
+    }
+
+    /// A live channel that stops showing pictures for a moment, after it had
+    /// started, is buffering: it gets more buffer next time it opens. One
+    /// that plays five minutes straight gives a little back.
+    private func watchForStalls(at now: Date) {
+        guard let stream = currentURL, !stream.isFileURL, isPlaying, !userPaused,
+              !vlcSuspendedForPiP, lastMediaStats.pictures > 0 else {
+            // A pause, or PiP, isn't a stall when it ends.
+            smoothSince = now
+            lastPictureAt = now
+            return
+        }
+        if now.timeIntervalSince(lastPictureAt) > 1.5 {
+            if !inStall {
+                inStall = true
+                AutoBuffer.noteStall(stream)
+            }
+            smoothSince = now
+        } else if now.timeIntervalSince(smoothSince) > 300 {
+            smoothSince = now
+            AutoBuffer.noteSmooth(stream)
         }
     }
 
@@ -800,6 +916,7 @@ public class PlayerEngine: NSObject, ObservableObject {
         // decoded audio or bytes off the network means the stream is alive.
         if let stats = vlcMediaPlayer.media?.statistics {
             let snapshot = (pictures: stats.displayedPictures, audio: stats.decodedAudio, bytes: stats.readBytes)
+            if snapshot.pictures != lastMediaStats.pictures { notePicture(at: now, shown: snapshot.pictures) }
             if snapshot.pictures != lastMediaStats.pictures
                 || snapshot.audio != lastMediaStats.audio
                 || snapshot.bytes != lastMediaStats.bytes {
@@ -812,6 +929,7 @@ public class PlayerEngine: NSObject, ObservableObject {
                 }
             }
         }
+        watchForStalls(at: now)
         if isPlaying && !userPaused,
            now.timeIntervalSince(lastMediaProgressTime) > Self.deadStreamAfter {
             print("🚨 [NebuloEngine] Nothing out of VLC for \(Int(Self.deadStreamAfter))s. Reloading.")
@@ -1044,6 +1162,12 @@ public class PlayerEngine: NSObject, ObservableObject {
         guard vlcSuspendedForPiP, currentBackend == .vlc else { return }
         vlcSuspendedForPiP = false
         lastMediaProgressTime = Date()
+        // The relay's listener can have moved while the window had it.
+        if let address = liveRelayAddress, vlcMediaPlayer.media?.url != address {
+            let media = VLCMedia(url: address)
+            media.addOptions(vlcOptions(for: address))
+            vlcMediaPlayer.media = media
+        }
         vlcMediaPlayer.play()
         if let time = pipReturnTime {
             pipReturnTime = nil
@@ -1084,6 +1208,14 @@ public class PlayerEngine: NSObject, ObservableObject {
             guard attempt == pipAttempt else { return server.stop() }
             guard let address else { return failPiP(unavailable: true) }
             pipRecordingServer = server
+            return armPiP(url: address)
+        }
+
+        // The player is already reading through the relay: the window reads
+        // the same video, from the phone, with nothing to wait for.
+        if let relay = liveRelay, let address = liveRelayAddress, liveRelaySource == url {
+            pipRelay = relay
+            pipRelayShared = true
             return armPiP(url: address)
         }
 
@@ -1145,7 +1277,8 @@ public class PlayerEngine: NSObject, ObservableObject {
                     if self.pipRecordingFile != nil {
                         let time = CMTime(seconds: self.currentTime, preferredTimescale: 600)
                         player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { _ in player.play() }
-                    } else if self.pipRelay != nil, let range = item.seekableTimeRanges.first?.timeRangeValue {
+                    } else if self.pipRelay != nil, !self.pipRelayShared,
+                              let range = item.seekableTimeRanges.first?.timeRangeValue {
                         // The far end of what is in hand: all of it is buffer.
                         player.seek(to: range.start) { _ in player.play() }
                     } else {
@@ -1217,6 +1350,8 @@ public class PlayerEngine: NSObject, ObservableObject {
                 address = await server.start() ?? url
             } else if let relay = self?.pipRelay {
                 address = await relay.restartServer() ?? url
+                // The player reads it too, at the new address from now on.
+                if let self, relay === self.liveRelay { self.liveRelayAddress = address }
             }
             guard let self, self.pipAVPlayer === player else { return }
             self.pipStreamURL = address
@@ -1318,6 +1453,8 @@ public class PlayerEngine: NSObject, ObservableObject {
         guard AVPictureInPictureController.isPictureInPictureSupported() else { return onUnavailable() }
         // A tap already being answered is left to it.
         guard currentBackend == .vlc, let url = currentURL, !startPiPWhenReady else { return }
+        // Still opening: a moment from now the window can use the same copy.
+        guard !liveRelayStarting else { return }
         if isPiPSessionActive {
             // Another stream's window is up: this one replaces it.
             pipController?.delegate = nil
@@ -1344,8 +1481,10 @@ public class PlayerEngine: NSObject, ObservableObject {
         onPiPUnavailable = nil
         pipRecordingServer?.stop()
         pipRecordingServer = nil
-        pipRelay?.stop()
+        // The player's own relay stays: VLC is reading it.
+        if !pipRelayShared { pipRelay?.stop() }
         pipRelay = nil
+        pipRelayShared = false
         pipRecordingFile = nil
         pipIsLastResort = false
         pipTimeControlObservation = nil
