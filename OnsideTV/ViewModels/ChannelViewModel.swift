@@ -852,11 +852,13 @@ class ChannelViewModel: ObservableObject {
                 // An error page is not a playlist with nothing in it.
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return load }
                 let accountID = account.id
-                let (channels, categories, guides) = await Task.detached(priority: .userInitiated) {
+                let (channels, categories, guides, moved) = await Task.detached(priority: .userInitiated) {
                     // Plenty of playlists aren't UTF-8; Latin-1 reads any bytes.
                     let content = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
                     let text = content.contains("#EXTINF") ? content : (String(data: data, encoding: .isoLatin1) ?? content)
-                    let (pChannels, pCategories, epgUrl) = await ChannelViewModel.parseM3U(content: text, idOffset: offset, accountID: accountID)
+                    let (pChannels, pCategories, epgUrl, legacy) = await ChannelViewModel.parseM3U(content: text, idOffset: offset, accountID: accountID)
+                    // Before renames are read, so they're found under the new ids.
+                    let moved = ChannelViewModel.moveM3USettings(account: account, legacy: legacy)
                     // parseM3U builds its channels directly, so unlike the
                     // Xtream path nothing here had ever applied the user's
                     // renames. Names typed on an M3U playlist reverted on the
@@ -865,8 +867,9 @@ class ChannelViewModel: ObservableObject {
                     let categories = await ChannelViewModel.processCategories(pCategories, prefix: prefix, idOffset: offset)
                     let guides = (epgUrl ?? "").split(separator: ",")
                         .compactMap { URL(string: $0.trimmingCharacters(in: .whitespaces)) }
-                    return (channels, categories, guides)
+                    return (channels, categories, guides, moved)
                 }.value
+                if moved { reloadChannelKeyedSettings() }
                 load.channels = channels
                 load.categories = categories
                 load.guides = guides
@@ -2865,7 +2868,7 @@ class ChannelViewModel: ObservableObject {
         
         let loadedRecents = load("recentChannelIDs", type: [Int].self) ?? []
         self.recentIDs = loadedRecents.reduce(into: [Int]()) { if !$0.contains($1) { $0.append($1) } }
-        self.manualChannelOrder = load("manualChannelOrder", type: [Int].self) ?? []
+        self.manualChannelOrder = savedManualChannelOrder()
         // Empty is the shipping default — see `homeRowOrder`.
         self.homeRowOrder = load("homeRowOrder", type: [String].self) ?? []
         self.recentQueries = UserDefaults.standard.stringArray(forKey: settingsPrefix + "recentQueries") ?? []
@@ -2972,8 +2975,12 @@ class ChannelViewModel: ObservableObject {
     func addToRecent(_ id: Int) { recentIDs.removeAll { $0 == id }; recentIDs.insert(id, at: 0); if recentIDs.count > 20 { recentIDs = Array(recentIDs.prefix(20)) }; if let d = try? JSONEncoder().encode(recentIDs) { UserDefaults.standard.set(d, forKey: settingsPrefix + "recentChannelIDs") } }
     func removeFromRecent(_ id: Int) { if let idx = recentIDs.firstIndex(of: id) { recentIDs.remove(at: idx); if let d = try? JSONEncoder().encode(recentIDs) { UserDefaults.standard.set(d, forKey: settingsPrefix + "recentChannelIDs") } } }
     
-    nonisolated static func parseM3U(content: String, idOffset: Int, accountID: UUID) async -> ([StreamChannel], [StreamCategory], String?) {
+    nonisolated static func parseM3U(content: String, idOffset: Int, accountID: UUID) async -> ([StreamChannel], [StreamCategory], String?, [Int: Int]) {
         var channels: [StreamChannel] = []; var categories: [StreamCategory] = []; var catNames = Set<String>()
+        // Line-number id the last build gave each channel -> the id it has now.
+        var legacy: [Int: Int] = [:]
+        var seenKeys: [String: Int] = [:]
+        var usedIDs = Set<Int>()
         var epgUrl: String? = nil
         let lines = content.components(separatedBy: .newlines); var current: StreamChannel? = nil
         
@@ -2998,13 +3005,102 @@ class ChannelViewModel: ObservableObject {
                 if !catNames.contains(group) { categories.append(StreamCategory(id: catID, name: group)); catNames.insert(group) }
                 
                 
-                let originalID = i 
+                // Where a channel sat in the file used to be its id, so a
+                // provider adding one line moved every favourite onto the
+                // channel next to it. The id now comes from the channel itself.
+                var key = "\(eID ?? "")|\(group)|\(name)"
+                let repeats = seenKeys[key, default: 0]
+                seenKeys[key] = repeats + 1
+                if repeats > 0 { key += "#\(repeats)" }
+                let originalID = ChannelViewModel.m3uLocalID(for: key, avoiding: &usedIDs)
+                legacy[i + idOffset] = originalID + idOffset
                 current = StreamChannel(id: originalID + idOffset, name: name, streamURL: "", icon: logo, categoryID: catID + idOffset, originalName: name, epgID: eID, hasArchive: false, originalID: originalID, accountID: accountID)
             } else if !line.hasPrefix("#") && !line.isEmpty && current != nil {
                 var fin = current!; fin.streamURL = line; fin.name = NameCleaner.clean(fin.name); channels.append(fin); current = nil
             }
         }
-        return (channels, categories, epgUrl)
+        return (channels, categories, epgUrl, legacy)
+    }
+
+    /// An M3U channel's id within its account: the same for the same channel
+    /// on every load, and below the 100,000,000 each account is given.
+    nonisolated static func m3uLocalID(for key: String, avoiding used: inout Set<Int>) -> Int {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in key.utf8 { hash = (hash ^ UInt64(byte)) &* 0x100_0000_01b3 }
+        var id = Int(hash % 99_999_999) + 1
+        while used.contains(id) { id = id % 99_999_999 + 1 }
+        used.insert(id)
+        return id
+    }
+
+    /// Picks up the settings `moveM3USettings` just rewrote.
+    private func reloadChannelKeyedSettings() {
+        func load<T: Decodable>(_ key: String, type: T.Type) -> T? {
+            guard let data = UserDefaults.standard.data(forKey: settingsPrefix + key) else { return nil }
+            return try? JSONDecoder().decode(type, from: data)
+        }
+        favoriteIDs = Set(load("favoriteChannelIDs", type: [Int].self) ?? [])
+        hiddenIDs = Set(load("hiddenChannelIDs", type: [Int].self) ?? [])
+        recentIDs = load("recentChannelIDs", type: [Int].self) ?? []
+        customHeroIDs = load("customHeroIDs", type: [Int].self) ?? []
+        renamedChannels = load("renamedChannels", type: [Int: String].self) ?? [:]
+        manualChannelOrder = savedManualChannelOrder()
+    }
+
+    /// Saved as a plain list, but only ever read back as JSON, so a custom
+    /// channel order was lost on every launch. Reads both.
+    private func savedManualChannelOrder() -> [Int] {
+        let key = settingsPrefix + "manualChannelOrder"
+        if let ids = UserDefaults.standard.array(forKey: key) as? [Int] { return ids }
+        guard let data = UserDefaults.standard.data(forKey: key) else { return [] }
+        return (try? JSONDecoder().decode([Int].self, from: data)) ?? []
+    }
+
+    /// The saved settings that name channels by id.
+    nonisolated static let channelKeyedSettings = [
+        "favoriteChannelIDs", "favoriteChannelOrder", "hiddenChannelIDs",
+        "recentChannelIDs", "manualChannelOrder", "customHeroIDs", "renamedChannels"
+    ]
+
+    /// Moves one M3U account's saved favourites, hidden channels, renames and
+    /// orders from the old line-number ids to the new ones, once. The old
+    /// values are kept under a backup key. Returns whether anything moved.
+    nonisolated static func moveM3USettings(account: Account, legacy: [Int: Int]) -> Bool {
+        let defaults = UserDefaults.standard
+        let done = "m3uStableIDs_\(account.id.uuidString)"
+        guard !defaults.bool(forKey: done), !legacy.isEmpty else { return false }
+        let low = account.stableID * 100_000_000, high = low + 100_000_000
+        // Anything not found is left alone rather than thrown away.
+        func move(_ id: Int) -> Int? {
+            guard (low..<high).contains(id) else { return id }
+            return legacy[id] ?? id
+        }
+        func moveList(_ ids: [Int]) -> [Int] {
+            var seen = Set<Int>()
+            return ids.compactMap(move).filter { seen.insert($0).inserted }
+        }
+        var backup: [String: Any] = [:]
+        var changed = false
+        for key in channelKeyedSettings {
+            guard let stored = defaults.object(forKey: key) else { continue }
+            backup[key] = stored
+            if let data = stored as? Data {
+                if key == "renamedChannels" {
+                    guard let names = try? JSONDecoder().decode([Int: String].self, from: data) else { continue }
+                    var moved: [Int: String] = [:]
+                    for (id, name) in names { if let new = move(id) { moved[new] = name } }
+                    if let out = try? JSONEncoder().encode(moved) { defaults.set(out, forKey: key); changed = true }
+                } else if let ids = try? JSONDecoder().decode([Int].self, from: data),
+                          let out = try? JSONEncoder().encode(moveList(ids)) {
+                    defaults.set(out, forKey: key); changed = true
+                }
+            } else if let ids = stored as? [Int] {
+                defaults.set(moveList(ids), forKey: key); changed = true
+            }
+        }
+        defaults.set(backup, forKey: "m3uIDBackup_\(account.id.uuidString)")
+        defaults.set(true, forKey: done)
+        return changed
     }
     
     /// 48 bits of FNV-1a: the same for the same text on every launch, and far

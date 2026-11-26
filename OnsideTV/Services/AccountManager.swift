@@ -158,6 +158,10 @@ class AccountManager: ObservableObject {
             if !accounts.isEmpty {
                 newAccount.stableID = maxID + 1
             }
+            // A new playlist starts on the new M3U channel ids, so there is
+            // nothing of its own to move; anything left in its id range by a
+            // removed account must not be treated as old line numbers.
+            UserDefaults.standard.set(true, forKey: "m3uStableIDs_\(newAccount.id.uuidString)")
             accounts.append(newAccount)
             if makeActive {
                 switchToAccount(newAccount)
