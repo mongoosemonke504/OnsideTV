@@ -51,10 +51,16 @@ nonisolated final class LiveStreamRelay: @unchecked Sendable {
     /// How much to have before answering. The player opens on the first
     /// segment, so a channel starts as quickly as it did reading the provider.
     private let enoughToStart: Double
+    /// Whether to keep some video back from the player. AVPlayer started at
+    /// the far end of what it has keeps its own buffer, so the PiP window is
+    /// given everything at once: held back, it got one piece at a time, just
+    /// as each came due, and stopped to buffer at the end of every one.
+    private let holdsBack: Bool
 
-    init(source: URL, startWith: Double = LiveStreamRelay.enoughToStart) {
+    init(source: URL, startWith: Double = LiveStreamRelay.enoughToStart, holdsBack: Bool = true) {
         self.source = source
         enoughToStart = startWith
+        self.holdsBack = holdsBack
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("pip-\(UUID().uuidString)")
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 8
@@ -163,7 +169,7 @@ nonisolated final class LiveStreamRelay: @unchecked Sendable {
                 last = playlist.sequence + first - 1
                 lock.withLock {
                     target = playlist.target
-                    reserve = min(Self.longestReserve, behind * 0.4)
+                    reserve = holdsBack ? min(Self.longestReserve, behind * 0.4) : 0
                 }
             } else if let seen = last, newest < seen - 1 || playlist.sequence > seen + 1 {
                 // The provider started its numbering over, or moved on past
