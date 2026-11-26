@@ -77,9 +77,14 @@ struct PlayerInfoPanel: View {
     /// is taken off to get the shared base, and added back for the one page
     /// that sits under it. Without this the Schedule and Recordings pages
     /// would reserve room for a picker they never show.
+    ///
+    /// Worked out from heights that don't change with the selected tab. It
+    /// used to take the whole block's height, picker and all, and adjust for
+    /// the tab in front; on a switch the tab changed a frame before the
+    /// picker's height did, so every page's top jumped mid-slide and the
+    /// pager sometimes gave up the slide and faded instead.
     private func reserve(for tab: InfoTab) -> CGFloat {
-        let base = headerBlockHeight - (selectedTab == .channels ? pickerHeight : 0)
-        return max(0, base) + (tab == .channels ? pickerHeight : 0)
+        headerBlockHeight + (tab == .channels ? pickerHeight : 0)
     }
 
     /// Last known scroll depth of each tab. A reference box rather than
@@ -271,6 +276,7 @@ struct PlayerInfoPanel: View {
     /// Favorites hubs use.
     private var headerChrome: some View {
         VStack(spacing: 0) {
+          VStack(spacing: 0) {
             ZStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 12) {
                     programHeader
@@ -303,6 +309,15 @@ struct PlayerInfoPanel: View {
 
             Divider()
                 .background(Color.white.opacity(0.1))
+          }
+          // Everything but the picker, which comes and goes with the tab.
+          .background(
+              GeometryReader { g in
+                  Color.clear
+                      .onAppear { headerBlockHeight = g.size.height }
+                      .onChangeCompat(of: g.size.height) { headerBlockHeight = $0 }
+              }
+          )
 
             // Pinned, like the tab bar above it — it belongs to the chrome,
             // not to the list. Inside the scroll it travelled away with the
@@ -322,13 +337,6 @@ struct PlayerInfoPanel: View {
             }
         }
         .background(Color.black)
-        .background(
-            GeometryReader { g in
-                Color.clear
-                    .onAppear { headerBlockHeight = g.size.height }
-                    .onChangeCompat(of: g.size.height) { headerBlockHeight = $0 }
-            }
-        )
         .modifier(HeaderSlide(offset: panelScroll, limit: headerTravel))
     }
 
