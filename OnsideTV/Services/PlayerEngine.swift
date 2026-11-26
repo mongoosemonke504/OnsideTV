@@ -1234,9 +1234,10 @@ public class PlayerEngine: NSObject, ObservableObject {
                 self.suspendVLCForPiP()
             }
         }
-        // Answers on the first few seconds; the rest of what it fetches goes
-        // to the window as it arrives, so the window has it all in hand.
-        let relay = LiveStreamRelay(source: url, startWith: 4, holdsBack: false)
+        // Answers once about twelve seconds are in hand: on four, the window
+        // played the first piece and then waited for the second. The rest of
+        // what it fetches goes to the window as it arrives.
+        let relay = LiveStreamRelay(source: url, startWith: 12, holdsBack: false)
         pipRelay = relay
         let address = await relay.start(quiet: 14)
         guard attempt == pipAttempt else { return relay.stop() }
