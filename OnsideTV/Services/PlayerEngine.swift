@@ -707,6 +707,7 @@ public class PlayerEngine: NSObject, ObservableObject {
     }
 
     public func stop() {
+        clearFrozenPicture()
         cancelLiveRecovery()
         // Never carry a startup mute into the next stream.
         localStartUnmuteTimer?.invalidate(); localStartUnmuteTimer = nil
@@ -1149,6 +1150,38 @@ public class PlayerEngine: NSObject, ObservableObject {
         try? AVAudioSession.sharedInstance().setActive(true)
     }
 
+    /// A still of the last picture, shown while VLC is stopped for the PiP
+    /// window and the window isn't up yet. Without it the player went black
+    /// for that second.
+    private var frozenPicture: UIImageView?
+
+    /// Puts the current picture up as a still. Waits at most about a third
+    /// of a second for VLC to make it, so the hand-over is barely held up.
+    private func freezePicture() async {
+        guard currentBackend == .vlc, vlcMediaPlayer.isPlaying, frozenPicture == nil else { return }
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pip-still-\(UUID().uuidString).png").path
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        vlcMediaPlayer.saveVideoSnapshot(at: path, withWidth: 0, andHeight: 0)
+        for _ in 0..<7 {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            guard let image = UIImage(contentsOfFile: path) else { continue }
+            let still = UIImageView(image: image)
+            still.frame = renderView.bounds
+            still.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            still.contentMode = .scaleAspectFit
+            still.isUserInteractionEnabled = false
+            renderView.addSubview(still)
+            frozenPicture = still
+            return
+        }
+    }
+
+    private func clearFrozenPicture() {
+        frozenPicture?.removeFromSuperview()
+        frozenPicture = nil
+    }
+
     /// PiP didn't happen after all: give the stream back to VLC.
     private func resumeVLCAfterPiPFailure() {
         teardownPiPPlayer()
@@ -1157,6 +1190,7 @@ public class PlayerEngine: NSObject, ObservableObject {
 
     /// Picks VLC back up where the window left off.
     private func resumeVLCAfterPiP() {
+        clearFrozenPicture()
         guard vlcSuspendedForPiP, currentBackend == .vlc else { return }
         vlcSuspendedForPiP = false
         lastMediaProgressTime = Date()
@@ -1225,13 +1259,20 @@ public class PlayerEngine: NSObject, ObservableObject {
         var handedOver = false
         if oneConnection {
             handedOver = true
+            await freezePicture()
+            guard attempt == pipAttempt else { return }
             suspendVLCForPiP()
         } else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
                 guard let self, attempt == self.pipAttempt, self.startPiPWhenReady, !self.isPiPSessionActive,
                       self.pipRelay?.hasData != true else { return }
                 handedOver = true
-                self.suspendVLCForPiP()
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.freezePicture()
+                    guard attempt == self.pipAttempt, self.startPiPWhenReady, !self.isPiPSessionActive else { return }
+                    self.suspendVLCForPiP()
+                }
             }
         }
         // Answers once about twelve seconds are in hand: on four, the window
@@ -1504,6 +1545,7 @@ public class PlayerEngine: NSObject, ObservableObject {
     /// `vlcSuspendedForPiP` alone — returning to the foreground uses it to
     /// know VLC still needs restarting.
     private func teardownPiPPlayer() {
+        clearFrozenPicture()
         pipAttempt += 1
         pipStatusObservation = nil
         pipPossibleObservation = nil
