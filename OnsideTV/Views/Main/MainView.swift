@@ -68,6 +68,8 @@ struct MainView: SwiftUI.View {
 
     @State private var showQuickSwitcher = false
     @State private var showSupportAlert = false
+    /// Also starts the update check as the app opens.
+    @ObservedObject private var updates = UpdateService.shared
     /// The channel waiting on the second-connection warning below.
     @State private var pendingSecondConnection: StreamChannel?
     /// "Don't Warn Again" on that warning.
@@ -136,7 +138,8 @@ struct MainView: SwiftUI.View {
             if viewModel.channels.isEmpty { 
                 await viewModel.loadData(url: xstreamURL, user: username, pass: password, type: LoginType(rawValue: loginTypeRaw) ?? .xtream) 
             }
-            if showSupportPopup { 
+            // An update to offer comes first; the support note can wait.
+            if showSupportPopup, updates.offeredRelease == nil {
                 let now = Date().timeIntervalSince1970
                 if now - lastSupportPopupTime > 43200 { 
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -144,6 +147,19 @@ struct MainView: SwiftUI.View {
                     lastSupportPopupTime = now 
                 } 
             } 
+        }
+        // Not on top of another pop-up: it waits for that one to close.
+        .alert("Update Available", isPresented: Binding(
+            get: { updates.offeredRelease != nil && !showSupportAlert && pendingSecondConnection == nil },
+            set: { if !$0 { updates.answerOffer() } }
+        ), presenting: updates.offeredRelease) { release in
+            Button("Download") {
+                if let url = URL(string: release.htmlUrl) { UIApplication.shared.open(url) }
+                updates.answerOffer()
+            }
+            Button("Later", role: .cancel) { updates.answerOffer() }
+        } message: { release in
+            Text("Onside TV \(release.tagName) is out. You have \(updates.currentVersion).")
         }
         .onReceive(Self.refreshTimer) { _ in
             Task { 
@@ -947,7 +963,7 @@ struct MainViewModifiers: ViewModifier {
             }
             .alert("Support Project", isPresented: $showSupportAlert) {
                 Button("Donate") { if let url = URL(string: "https://ko-fi.com/mongoosemonke") { UIApplication.shared.open(url) } }
-                Button("Join Discord") { if let url = URL(string: "https://discord.gg/QkBUjsGCJ2") { UIApplication.shared.open(url) } }
+                Button("Join Discord") { if let url = URL(string: "https://discord.gg/msq2tcd5Rg") { UIApplication.shared.open(url) } }
                 Button("Don't Show Again") { showSupportPopup = false }
                 Button("Close", role: .cancel) {}
             } message: { Text("This is a free, open-source project that is constantly being worked on. If you enjoy using it, please consider donating to support development!") }

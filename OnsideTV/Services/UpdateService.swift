@@ -22,6 +22,17 @@ class UpdateService: ObservableObject {
     @Published var showUpToDate: Bool = false
     @Published var latestRelease: UpdateRelease? = nil
     @Published var errorMessage: String? = nil
+    /// A newer release to tell the user about with a pop-up when the app
+    /// opens. Each version is offered once: answering it, either way, means
+    /// it doesn't ask again. Settings still shows it whenever it's open.
+    @Published var offeredRelease: UpdateRelease? = nil
+    private static let offeredKey = "updatePromptedVersion"
+
+    /// The pop-up was answered: don't offer this version again.
+    func answerOffer() {
+        if let tag = offeredRelease?.tagName { UserDefaults.standard.set(tag, forKey: Self.offeredKey) }
+        offeredRelease = nil
+    }
     
     init() {
         Task {
@@ -64,6 +75,9 @@ class UpdateService: ObservableObject {
                         htmlUrl: release.htmlUrl
                     )
                     self.isUpdateAvailable = true
+                    if UserDefaults.standard.string(forKey: Self.offeredKey) != release.tagName {
+                        self.offeredRelease = self.latestRelease
+                    }
                 } else {
                     self.isUpdateAvailable = false
                     if manual {
