@@ -66,11 +66,41 @@ struct GameActivityAttributes: ActivityAttributes {
 }
 
 extension GameActivityAttributes {
-    static let appGroupID = "group.tv.onside.app"
+    /// The shared folder the app and the Live Activity both read, where team
+    /// logos are left for the activity. Its name is the one in the signature
+    /// this copy was installed with: sideloading tools re-sign the app under
+    /// a name of their own, and looking only for the original found nothing,
+    /// which left the activity showing letters instead of logos.
+    nonisolated static let appGroupID: String = {
+        let original = "group.tv.onside.app"
+        var signed: [String] = []
+        if let groups = Bundle.main.object(forInfoDictionaryKey: "ALTAppGroups") as? [String] { signed += groups }
+        signed += provisionedAppGroups()
+        let ours = signed.filter { $0.contains("tv.onside.app") } + signed
+        for id in ours + [original]
+        where FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: id) != nil {
+            return id
+        }
+        return original
+    }()
+
+    /// App groups named in the provisioning profile inside this bundle.
+    private nonisolated static func provisionedAppGroups() -> [String] {
+        guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+              let data = try? Data(contentsOf: url),
+              let start = data.range(of: Data("<?xml".utf8)),
+              let end = data.range(of: Data("</plist>".utf8), in: start.lowerBound..<data.endIndex),
+              let plist = try? PropertyListSerialization.propertyList(
+                from: data[start.lowerBound..<end.upperBound], format: nil) as? [String: Any],
+              let entitlements = plist["Entitlements"] as? [String: Any],
+              let groups = entitlements["com.apple.security.application-groups"] as? [String]
+        else { return [] }
+        return groups
+    }
 
     /// Resolves a stored logo filename to its file URL in the shared
     /// container. Nil when the app group isn't provisioned.
-    static func logoURL(filename: String) -> URL? {
+    nonisolated static func logoURL(filename: String) -> URL? {
         FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: appGroupID)?
             .appendingPathComponent("Logos", isDirectory: true)
