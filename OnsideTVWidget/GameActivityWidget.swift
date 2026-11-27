@@ -238,11 +238,28 @@ struct LockScreenGameView: View {
     let context: ActivityViewContext<GameActivityAttributes>
 
     var body: some View {
-        if context.attributes.isFieldEvent {
-            fieldEventCard
-        } else {
-            matchupCard
+        Group {
+            if context.attributes.isFieldEvent {
+                fieldEventCard
+            } else {
+                matchupCard
+            }
         }
+        .overlay(alignment: .topTrailing) { removeButton }
+    }
+
+    /// Takes the activity off the Lock Screen. A game that has ended can't be
+    /// reached in the app to turn its bell off, so this is the way out.
+    private var removeButton: some View {
+        Button(intent: EndGameActivityIntent(gameID: context.attributes.gameID)) {
+            Image(systemName: "xmark")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.white.opacity(0.6))
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(.white.opacity(0.12)))
+        }
+        .buttonStyle(.plain)
+        .padding(8)
     }
 
     /// A tournament or race weekend: the event, where it is up to, and who is
@@ -267,6 +284,7 @@ struct LockScreenGameView: View {
                         .minimumScaleFactor(0.8)
                     Spacer(minLength: 8)
                     liveClock(context: context, size: 12)
+                        .padding(.trailing, 22)
                 }
 
                 if let board = context.state.leaderboard, !board.isEmpty {

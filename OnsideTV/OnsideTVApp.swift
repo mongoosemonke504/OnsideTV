@@ -140,6 +140,11 @@ struct OnsideTVApp: App {
                 .environmentObject(scoreViewModel)
                 .onAppear {
                     UIApplication.shared.beginReceivingRemoteControlEvents()
+                    // Lets a background wake bring Live Activities up to date,
+                    // and end those whose games have finished.
+                    BackgroundManager.shared.refreshLiveActivities = { [scoreViewModel] in
+                        await scoreViewModel.fetchScores(forceRefresh: true, silent: true)
+                    }
                 }
                 .onChange(of: scenePhase) { phase in
                     if phase == .active {
@@ -187,6 +192,9 @@ class BackgroundManager {
     /// more often (whenever it predicts the app might be used). Acts as the
     /// day-time trigger so a stale guide doesn't wait for the charger.
     let quickRefreshTaskID = "com.nebulo.epgQuickRefresh"
+    /// Fetches fresh scores, which ends the Live Activity of any game that
+    /// has finished. Set by the app as it opens.
+    var refreshLiveActivities: (() async -> Void)?
 
     func register() {
         BGTaskScheduler.shared.register(forTaskWithIdentifier: backgroundTaskID, using: nil) { task in
@@ -217,8 +225,14 @@ class BackgroundManager {
         let quick = BGAppRefreshTaskRequest(identifier: quickRefreshTaskID)
         // Around the next recording's start, if that comes first: iOS decides,
         // but it may hand a closed app the time to begin it.
-        quick.earliestBeginDate = RecordingManager.shared.nextScheduledStart
+        var earliest = RecordingManager.shared.nextScheduledStart
             .map { min($0, nextRunDate()) } ?? nextRunDate()
+        // A game on the Lock Screen: ask to look again soon, so one that has
+        // finished doesn't stay there until the app is next opened.
+        if !GameActivityManager.shared.trackedGameIDs.isEmpty {
+            earliest = min(earliest, Date().addingTimeInterval(15 * 60))
+        }
+        quick.earliestBeginDate = earliest
         do {
             try BGTaskScheduler.shared.submit(quick)
         } catch {
@@ -232,6 +246,9 @@ class BackgroundManager {
         let work = Task {
             // Any time in the background is a chance to start one that is due.
             RecordingManager.shared.checkSchedules()
+            if !GameActivityManager.shared.trackedGameIDs.isEmpty {
+                await self.refreshLiveActivities?()
+            }
             let result = await ChannelViewModel.shared.backgroundFetch()
             task.setTaskCompleted(success: result != .noData)
         }
