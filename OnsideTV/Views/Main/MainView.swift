@@ -946,7 +946,7 @@ struct MainViewModifiers: ViewModifier {
                 if showing { renameDraft = viewModel.renameInput }
             }
             .alert("Support Project", isPresented: $showSupportAlert) {
-                Button("Donate") { if let url = URL(string: "https://buymeacoffee.com/mongoosemonke") { UIApplication.shared.open(url) } }
+                Button("Donate") { if let url = URL(string: "https://ko-fi.com/mongoosemonke") { UIApplication.shared.open(url) } }
                 Button("Join Discord") { if let url = URL(string: "https://discord.gg/QkBUjsGCJ2") { UIApplication.shared.open(url) } }
                 Button("Don't Show Again") { showSupportPopup = false }
                 Button("Close", role: .cancel) {}

@@ -65,10 +65,10 @@ No accounts, no ads, no analytics and no tracking. Your login stays on your phon
 
 ## ❤️ Support the project
 
-Onside TV is free and open-source. If you enjoy using it, consider buying me a coffee!
+Onside TV is free and open-source. If you enjoy using it, consider supporting it on Ko-fi!
 
-<a href="https://buymeacoffee.com/mongoosemonke">
-  <img src="https://camo.githubusercontent.com/2103f6f19430c25368a3350117da5b736b008d776858e772b226e642398555e0/68747470733a2f2f63646e2e6275796d6561636f666665652e636f6d2f627574746f6e732f76322f64656661756c742d79656c6c6f772e706e67" alt="Buy Me A Coffee" width="160">
+<a href="https://ko-fi.com/mongoosemonke">
+  <img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support me on Ko-fi">
 </a>
 
 Come hang out in the [Discord](https://discord.gg/msq2tcd5Rg) too.

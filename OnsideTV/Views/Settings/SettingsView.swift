@@ -450,8 +450,8 @@ struct SupportCard: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.primary)
 
-                Button(action: { UIApplication.shared.open(URL(string: "https://buymeacoffee.com/mongoosemonke")!) }) {
-                    SettingsRow(icon: "cup.and.saucer.fill", title: "Buy Me a Coffee", iconColor: .yellow)
+                Button(action: { UIApplication.shared.open(URL(string: "https://ko-fi.com/mongoosemonke")!) }) {
+                    SettingsRow(icon: "cup.and.saucer.fill", title: "Support on Ko-fi", iconColor: .yellow)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.primary)
