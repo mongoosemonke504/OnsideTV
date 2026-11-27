@@ -1171,11 +1171,7 @@ public class PlayerEngine: NSObject, ObservableObject {
             still.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             still.contentMode = .scaleAspectFit
             still.isUserInteractionEnabled = false
-            // Underneath the PiP player, never over it: iOS won't open the
-            // window from a player that is covered. VLC's picture goes when it
-            // stops, which leaves the still showing until the PiP player has
-            // a picture of its own on top of it.
-            renderView.insertSubview(still, at: 0)
+            renderView.addSubview(still)
             frozenPicture = still
             return
         }
@@ -1326,12 +1322,8 @@ public class PlayerEngine: NSObject, ObservableObject {
         layer.videoGravity = .resizeAspect
         layer.frame = renderView.bounds
         // Behind VLC's drawable — rendering (required for PiP) but never
-        // visible. Over the still, if one is up, so it is never covered.
-        if let still = frozenPicture {
-            renderView.layer.insertSublayer(layer, above: still.layer)
-        } else {
-            renderView.layer.insertSublayer(layer, at: 0)
-        }
+        // visible.
+        renderView.layer.insertSublayer(layer, at: 0)
         pipAVPlayer = player
         pipAVLayer = layer
         pipStreamURL = url
