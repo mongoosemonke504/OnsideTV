@@ -358,6 +358,14 @@ public class PlayerEngine: NSObject, ObservableObject {
         if url != recoveringURL { recoveryAttempts = 0 }
         recoveringURL = nil
         self.unexpectedPauseCount = 0
+        // Another stream opened while a PiP window is up: the window closes and
+        // the new one plays in the app. Not when the window's own full-screen
+        // button brought the player back, which hands over as it always has.
+        if isPiPSessionActive, !pipRestoring {
+            pipController?.delegate = nil
+            pipController?.stopPictureInPicture()
+            teardownPiPPlayer()
+        }
         stop()
         self.isBuffering = true
         self.userPaused = false
@@ -1099,6 +1107,8 @@ public class PlayerEngine: NSObject, ObservableObject {
     /// True from PiP start until it ends — dismissal paths check this so
     /// closing the player screen doesn't kill an active floating window.
     public private(set) var isPiPSessionActive = false
+    /// The window's full-screen button was pressed and it hasn't closed yet.
+    private var pipRestoring = false
     /// A PiP-button tap is waiting for its window. Stays set until the window
     /// is really up, so a tap that never gets one is always cleaned up.
     private var startPiPWhenReady = false
@@ -1504,6 +1514,7 @@ public class PlayerEngine: NSObject, ObservableObject {
     /// `vlcSuspendedForPiP` alone — returning to the foreground uses it to
     /// know VLC still needs restarting.
     private func teardownPiPPlayer() {
+        pipRestoring = false
         pipAttempt += 1
         pipStatusObservation = nil
         pipPossibleObservation = nil
@@ -1697,6 +1708,7 @@ extension PlayerEngine: AVPictureInPictureControllerDelegate {
         } else {
             pipResume = nil
         }
+        pipRestoring = true
         NotificationCenter.default.post(name: .nebuloPiPRestore, object: nil)
         completionHandler(true)
     }
