@@ -1249,7 +1249,9 @@ public class PlayerEngine: NSObject, ObservableObject {
         // what it fetches goes to the window as it arrives.
         let relay = LiveStreamRelay(source: url, startWith: 12, holdsBack: false)
         pipRelay = relay
-        let address = await relay.start(quiet: 14)
+        // A provider swamped by a big game can go quiet for a good while
+        // between pieces: give it that long before giving up on the window.
+        let address = await relay.start(quiet: 25)
         guard attempt == pipAttempt else { return relay.stop() }
         if address != nil, handedOver, !oneConnection {
             // It only got the stream once VLC let go: next time, don't wait.
@@ -1301,7 +1303,7 @@ public class PlayerEngine: NSObject, ObservableObject {
 
         // If the window still isn't up after this, the attempt is over: drop
         // the side player and leave VLC playing as it was.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
             guard let self, attempt == self.pipAttempt, self.startPiPWhenReady, !self.isPiPSessionActive else { return }
             print("⚠️ [NebuloEngine] PiP didn't start in time; staying inline")
             self.failPiP(unavailable: false)
