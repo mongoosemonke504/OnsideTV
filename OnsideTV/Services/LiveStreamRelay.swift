@@ -151,14 +151,7 @@ nonisolated final class LiveStreamRelay: @unchecked Sendable {
                 return
             } catch {
                 failures += 1
-                // Until the first answer, ask again quickly: a one-connection
-                // line refuses for the few seconds it takes to let the player's
-                // connection go, and waiting longer each time only added delay.
-                if last == nil, failures <= 40 {
-                    await pause(0.3)
-                } else {
-                    await pause(min(0.5 * Double(failures), 3))
-                }
+                await pause(min(0.5 * Double(failures), 3))
                 continue
             }
             let count = playlist.segments.count
